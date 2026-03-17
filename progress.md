@@ -1,6 +1,6 @@
 # Implementation Progress
 
-<!-- The agent overwrites this file during Setup (Phase 0) with the actual component list for the current paper. -->
+<!-- The agent overwrites this file during Phase 1 with the actual component list. -->
 <!-- This is a template showing the expected format. -->
 
 **Paper:** <!-- Title from requirements.md -->
@@ -9,41 +9,44 @@
 
 ---
 
-## Components
+## Phase Status
 
-<!-- Agent fills this in after reading the paper. One checkbox per implementation unit. -->
-<!-- Format: [ ] component_name — brief description -->
-
-- [ ] `data` — dataset loading and preprocessing
-- [ ] `model` — main architecture
-- [ ] `loss` — loss function(s)
-- [ ] `train` — training loop integration
-- [ ] `eval` — metric computation
+| Phase | Status | Exit Gate Met? |
+|-------|--------|----------------|
+| 1. Paper Contract | pending | |
+| 2. Data Proof | pending | |
+| 3. Component Implementation | pending | |
+| 4. Integration Proof | pending | |
+| 5. Benchmarking | pending | |
+| 6. Improvement | pending | |
 
 ---
 
-## Status
+## Components
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| data | pending | |
-| model | pending | |
-| loss | pending | |
-| train | pending | |
-| eval | pending | |
+<!-- Agent fills this in after reading the paper. Ordered by dependency. -->
+<!-- Format: [ ] component_name — brief description — exit criteria -->
+
+- [ ] `data` — dataset loading and preprocessing — shapes match contract, loader <2s/10 batches
+- [ ] `model` — main architecture — equation oracle passes, can overfit 1-2 samples
+- [ ] `loss` — loss function(s) — coefficient mapping verified, all terms finite
+- [ ] `train` — training loop — loss decreases at smoke config
+- [ ] `eval` — metric computation — matches paper's evaluation protocol
 
 ---
 
 ## Blockers
 
-<!-- Agent documents components that failed after 3 attempts -->
-<!-- Format: ⚠️ component — what failed, what was tried -->
+<!-- Components that failed after 3 attempts -->
+<!-- Format: ⚠️ component — what failed, what was tried, remaining uncertainty -->
 
 (none yet)
 
 ---
 
-## Experiment Log Summary
+## Checkpoint Compatibility
 
-<!-- Agent appends key findings here as training runs accumulate -->
-<!-- Full log is in results.tsv -->
+<!-- Track which commits are checkpoint-compatible -->
+<!-- Format: commit_range — description -->
+
+(none yet)

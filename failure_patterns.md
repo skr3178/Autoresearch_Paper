@@ -141,6 +141,113 @@ For factorized tokenizers: verify the number of factors, not just total vocabula
 
 ---
 
+## Category 7: Checkpoint and Compatibility Failures
+
+### 7.1 Checkpoint Key Inconsistency
+**What happens**: `KeyError` or missing keys when loading a checkpoint. Training resumes from scratch or crashes.
+**Why it happens**: Different codebases, training stages, or save utilities use different key conventions — `"model"` vs `"model_state_dict"` vs `"state_dict"`, or nested vs flat dicts.
+**Prevention**: Always inspect checkpoint keys before loading:
+```python
+ckpt = torch.load(path, map_location="cpu")
+print(list(ckpt.keys()))
+```
+Write a `load_checkpoint()` helper that handles the key conventions you encounter, rather than hardcoding one.
+
+### 7.2 Architecture Change Invalidates Old Checkpoints
+**What happens**: After fixing a bug in the model (e.g. removing an incorrect activation, changing a layer), old checkpoints produce degraded outputs — collapsed representations, wrong outputs, or worse metrics than before the fix.
+**Why it happens**: Bug fixes change weight semantics. Weights trained with the bug learned to compensate for it. After the fix, those compensations become harmful.
+**Prevention**: After any architecture fix that changes the forward pass behavior, retrain from scratch. Document in `progress.md` which commits are checkpoint-compatible. Never assume old weights are valid after changing the model's computation graph.
+
+---
+
+## Category 8: Evaluation and Benchmark Mismatch
+
+Metric looks wrong not because the model is wrong, but because the evaluation doesn't match the paper's protocol. These bugs don't crash — they produce numbers that are subtly incomparable to the paper.
+
+### 8.1 Best-of-K vs Single Prediction
+**What happens**: Paper reports best-of-K metric (generate K predictions, report the best) but implementation evaluates a single prediction. Result is systematically worse than paper for the wrong reason.
+**Prevention**: Check the paper's evaluation section for "best-of-K", "min over K samples", "oracle" language. Document in evaluation contract whether the metric is single-sample or best-of-K, and what K is.
+
+### 8.2 Paper Split vs Local Split
+**What happens**: Paper's test set has N samples, your test set has M ≠ N. Metric is computed over different data, making comparison meaningless.
+**Prevention**: Verify split sizes match the paper's experimental section. If using a subset, document the expected metric adjustment in `paper_contract.md`.
+
+### 8.3 Raw GT vs Reconstructed GT
+**What happens**: Paper computes metric against raw ground truth, but implementation computes against ground truth that has been through an encode-decode cycle (e.g. tokenized then detokenized). The reconstruction error is baked into the "ground truth", inflating the metric.
+**Prevention**: Verify the source of ground truth used in metric computation. If any preprocessing is applied to GT, it must match what the paper does.
+
+### 8.4 Unit or Scale Mismatch
+**What happens**: Metric is computed in different units (meters vs centimeters, radians vs degrees, pixels vs normalized coordinates). Off by a constant factor.
+**Prevention**: Check units of both predictions and ground truth before metric computation. Print a few values from each and verify they're in the same range.
+
+### 8.5 Sampling/Inference Schedule Mismatch
+**What happens**: Paper uses N diffusion steps / sampling iterations at inference, implementation uses a different N. Or noise schedule endpoints differ between training and inference.
+**Prevention**: Cross-check inference procedure against training. Document in evaluation contract: number of sampling steps, schedule type, and endpoints.
+
+### 8.6 Threshold or Filtering Mismatch
+**What happens**: Paper applies distance thresholds, confidence filters, or ROI restrictions during evaluation that the implementation misses (or applies differently).
+**Prevention**: Look for phrases like "within X meters", "with confidence > Y", "in the ROI" in the paper's evaluation section. Document every filter in the evaluation contract.
+
+### 8.7 Metric Name Reused with Different Formula
+**What happens**: Paper says "FID" or "ADE" but uses a variant formula (different feature extractor, different normalization, different averaging). Implementation uses the standard formula, gets different numbers.
+**Prevention**: Check if the paper references a specific implementation or library for metric computation. If they cite someone else's metric code, use the same code.
+
+---
+
+## Category 9: False Proof
+
+Tests pass, loss decreases, outputs look plausible — but the implementation is still wrong. These are the hardest bugs to catch because they bypass normal verification.
+
+### 9.1 Shapes Pass, Equation is Wrong
+**What happens**: All shape assertions pass, forward/backward works, but the mathematical operation is incorrect (wrong coefficients, wrong sign, missing term). The model trains but learns the wrong thing.
+**Why shapes don't catch it**: Shape tests verify tensor dimensions, not tensor contents. A matrix multiply with the wrong weight matrix has the same output shape as the correct one.
+**Prevention**: Equation oracle tests — hand-compute the expected output for a tiny input and assert the code matches. This is the only reliable defense.
+
+### 9.2 Short Overfit Passes, Inference is Wrong
+**What happens**: Model overfits training data, loss goes to near-zero, but generated outputs at inference are wrong (blurry, repetitive, collapsed).
+**Why it happens**: Training and inference use different code paths (different noise levels, different sampling, different masking). The training path works but the inference path has a bug.
+**Prevention**: After overfitting on 1-2 samples, run the full inference pipeline on those same samples. The generated output should closely match the training data.
+
+### 9.3 Metric Improves for the Wrong Reason
+**What happens**: Metric gets better after a change, but the improvement comes from a bug that happens to help the metric (e.g. test-time data leakage, evaluation on training data, accidentally easier test set).
+**Prevention**: When a change produces surprisingly large improvement, be suspicious. Verify the evaluation is on the correct split. Check that the improvement is consistent across multiple seeds.
+
+### 9.4 Visualization Looks Plausible but is Wrong
+**What happens**: Generated images/trajectories/videos look reasonable to a human eye but have subtle errors (wrong coordinate frame, flipped axes, systematic offset).
+**Prevention**: Compare against ground truth quantitatively, not just visually. Overlay predictions on ground truth. Compute point-wise error and visualize the error map.
+
+### 9.5 Pretrained Checkpoint Masks Implementation Bugs
+**What happens**: Loading pretrained weights produces good results, so the code appears correct. But the code has a bug that the pretrained weights happen to compensate for. When training from scratch, the bug surfaces.
+**Prevention**: Always validate the pipeline with training from scratch, not just with pretrained weights. A pretrained checkpoint is not evidence of code correctness.
+
+---
+
+## Category 10: Autonomous Loop Pathologies
+
+Failure modes specific to autonomous agents running without human oversight.
+
+### 10.1 Endless Hyperparameter Search Without Diagnosis
+**What happens**: The agent runs dozens of experiments tweaking learning rate, batch size, weight decay — without ever diagnosing WHY the metric is wrong. The real problem is a code bug, not hyperparameters.
+**Prevention**: Before changing any hyperparameter, diagnose first. Log loss components, gradient norms, intermediate representations. If the model can't overfit 1-2 samples, no hyperparameter change will help.
+
+### 10.2 Deleting Failed Experiment History
+**What happens**: Agent uses `git reset --hard` to remove failed experiments. History is lost. The same failed experiments may be repeated. Debugging information is destroyed.
+**Prevention**: Never delete commits. Use `git revert` if needed. Log every experiment in `results.tsv` and `decision_log.md`, including failures.
+
+### 10.3 Changing Multiple Variables Per Experiment
+**What happens**: Agent makes 3 changes at once. Metric improves. It's impossible to know which change helped (or whether one change helped and two hurt, with a net positive).
+**Prevention**: One change per experiment. Always. If you want to try a combination, first test each change individually.
+
+### 10.4 Moving On Without Isolating Uncertainty
+**What happens**: A component partially works (loss decreases but metric is off). Agent moves to the next component instead of fully diagnosing the issue. Later, the unresolved issue compounds with new bugs and becomes impossible to isolate.
+**Prevention**: Before moving on from a component, document the remaining uncertainty in `proof.md`. If the uncertainty is high-impact, resolve it before building on top of it.
+
+### 10.5 Treating "Training Completed" as Evidence of Correctness
+**What happens**: Training finishes without crashing, loss decreases, agent concludes the implementation is correct. But the model learned the wrong thing (wrong loss coefficients, wrong evaluation protocol, wrong data preprocessing).
+**Prevention**: "It runs" is not proof. "Loss decreases" is not proof. The bar is: ablation deltas match the paper, evaluation protocol matches the contract, and at least one metric value is in the plausible range.
+
+---
+
 ## Pre-Training Checklist
 
 Before starting any training run, verify:
