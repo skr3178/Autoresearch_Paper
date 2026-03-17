@@ -18,3 +18,18 @@ AGENTS.md
 
 # Experimental code/artifacts
 dev/
+
+# Large files - model checkpoints
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Data directories
+datasets/
+Conversations/
+*.tsv
+active_dataset.txt
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
