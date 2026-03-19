@@ -1,0 +1,54 @@
+## Caption
+Table 4. Effect of different components on IL and RL loss using our CarPlanner. Results are in Test14-random non-reactive benchmark.
+
+## Visual Content
+Ablation table with design choices (left) and metrics (right):
+
+### Columns
+Design Choices:
+- Loss Type (IL / RL)
+- Mode Dropout (checkbox)
+- Selector Side Task (checkbox)
+- Ego-history Dropout (checkbox)
+- Backbone Sharing (checkbox)
+
+Closed-loop metrics (↑ = higher is better):
+- CLS-NR, S-CR, S-Area, S-PR, S-Comfort
+
+Open-loop losses (↓ = lower is better):
+- Loss Selector, Loss Generator
+
+### Rows (IL section):
+| Mode Drop | Sel. Side | Ego-hist Drop | BB Share | CLS-NR | S-CR  | S-Area | S-PR  | S-Comfort | L-Sel | L-Gen |
+|-----------|-----------|---------------|----------|--------|-------|--------|-------|-----------|-------|-------|
+| ✗         | ✗         | ✗             | ✗        | 92.05  | 97.29 | 98.46  | 91.52 | 1.04      | 147.5 |       |
+| ✓         | ✗         | ✗             | ✗        | 91.21  | 96.54 | 98.46  | 91.44 | **96.92** | 1.07  | 153.0 |
+| ✓         | ✓         | ✗             | ✗        | 91.21  | 96.91 | 98.46  | **95.30** | 93.86 | 1.04 | 147.5 |
+| ✓         | ✓         | ✓             | ✗        | 92.72  | 98.06 | 98.46  | 94.88 | 95.53     | 1.04  | 167.5 |
+| ✓         | ✓         | ✓             | ✓        | **93.41** | **98.85** | **98.85** | 93.87 | 96.15 | **1.04** | **174.3** |
+
+### Rows (RL section):
+| Mode Drop | Sel. Side | Ego-hist Drop | BB Share | CLS-NR | S-CR  | S-Area | S-PR  | S-Comfort | L-Sel | L-Gen |
+|-----------|-----------|---------------|----------|--------|-------|--------|-------|-----------|-------|-------|
+| ✗         | ✗         | ✗             | ✗        | 91.67  | 98.85 | 98.46  | 91.69 | 90.73     | 1.04  | 1812.6 |
+| ✓         | ✗         | ✗             | ✗        | 93.46  | 98.07 | **99.61** | 94.26 | 92.28   | 1.09  | 2254.6 |
+| ✓         | ✓         | ✗             | ✗        | **94.07** | **99.22** | 98.85 | **95.30** | 93.37 | **1.05** | **540.3** |
+| ✓         | ✓         | ✓             | ✗        | 89.51  | 97.27 | 98.46  | 90.93 | 83.20     | 1.05  | 524.3 |
+| ✓         | ✓         | ✓             | ✓        | 88.66  | 95.54 | 98.84  | 92.82 | 86.05     | 1.21  | 1928.1 |
+
+**Bold = best per column.**
+
+## Pertinent Paper Text
+Section V-B (Ablation Study): "We ablate four design choices: (1) Mode Dropout — randomly dropping the mode condition during training to prevent over-reliance; (2) Selector Side Task — auxiliary IL loss on ego trajectory prediction from the mode selector; (3) Ego-history Dropout — randomly masking ego history to improve robustness; (4) Backbone Sharing — sharing the visual backbone between policy and value function."
+
+"For RL, the best configuration uses Mode Dropout + Selector Side Task (without Ego-history Dropout or Backbone Sharing), achieving CLS-NR=94.07."
+
+"Ego-history Dropout hurts RL performance (89.51 vs 94.07), suggesting the policy needs ego history for RL credit assignment."
+
+## Key Implementation Notes
+- **RL best config**: Mode Dropout=✓, Selector Side Task=✓, Ego-history Dropout=✗, Backbone Sharing=✗ → CLS-NR=94.07
+- **IL best config**: all four=✓ → CLS-NR=93.41
+- Mode Dropout is critical for both IL and RL
+- Ego-history Dropout helps IL but hurts RL
+- Backbone Sharing helps IL but hurts RL
+- Loss Generator values for RL are much larger (540–2254) than IL (147–174) — different scale

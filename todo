@@ -1,0 +1,5 @@
+ok. Can i set it such that for use the more expensive OPENAI_API_KEY for 
+1. multimodal part- vision for figures from paper understanding- . 
+2. if stuck in a longer loop use the open_ai_key. 
+
+For everything else- generating models, codes default to the GLM5 coding agent.   

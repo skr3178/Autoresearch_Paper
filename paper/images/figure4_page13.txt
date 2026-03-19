@@ -1,0 +1,30 @@
+## Caption
+Figure 4. Performance of different training time horizons under different testing time horizons. The value in each cell is the CLS-NR metric on the Test14-Random non-reactive benchmark.
+
+## Visual Content
+4×4 heatmap (confusion-matrix style):
+- X-axis: Time Horizon (Train) — values: 1, 3, 5, 8
+- Y-axis: Time Horizon (Test) — values: 1, 3, 5, 8
+- Color scale: light blue (low ~75) to dark blue (high ~94), labeled "CLS-NR" on right axis
+- Color bar ticks: 75, 80, 85, 90
+
+### Cell values (Train→Test):
+| Train\Test | 1     | 3     | 5     | 8     |
+|------------|-------|-------|-------|-------|
+| 1          | 75.79 | 86.08 | 85.09 | 87.43 |
+| 3          | 73.04 | 88.65 | 91.14 | 93.93 |
+| 5          | 71.55 | 89.39 | 91.72 | 93.94 |
+| 8          | 71.55 | 89.36 | 91.80 | 94.07 |
+
+## Pertinent Paper Text
+Section IV (Training Details) / Section V (Ablation): "We study the effect of training horizon T on test performance. Training with longer horizons (T=8) consistently improves CLS-NR across all test horizons. The diagonal (train=test) improves monotonically with horizon length. Training T=1 achieves only 75.79 on test T=1, while T=8 achieves 94.07 on test T=8."
+
+"The paper uses T=8 as the default training horizon based on this analysis."
+
+## Architectural Details
+- Training horizon T: number of auto-regressive steps during training (1, 3, 5, or 8)
+- Testing horizon: number of steps during closed-loop evaluation
+- CLS-NR: Closed-Loop Score Non-Reactive (primary metric)
+- Best performance: train T=8, test T=8 → CLS-NR=94.07
+- Short training horizon (T=1) hurts long-horizon test performance most
+- Default paper setting: T=8 for both train and test

@@ -1,0 +1,39 @@
+## Caption
+Figure 3. Qualitative comparison of trajectory planning on nuPlan. Three rows compare PDM-Closed, CarPlanner-IL (Ours), and CarPlanner (Ours) across 4 scenario columns, with metric scores shown in a right-side table per method.
+
+## Visual Content
+3 rows × 4 scenario columns of BEV planning visualizations, plus a metric table on the right per row.
+
+### Row 1: PDM-Closed (baseline)
+- 4 scenario BEV plots showing bird's-eye view of road + agents
+- Each plot has a "Score" panel (color-coded lines: blue/green/red/orange) showing per-step planning scores over time
+- Score values shown: 3.00, 0.96, 0.96, 0.00, 0.80, 0.90, 0.86, 0.94 (approximate, across steps/scenarios)
+- Metric table (right): CLS-NR: 47.40, S-CR: 100.0, S-TTC: 100.0, S-Area: 100.0, S-PR: 31.08
+
+### Row 2: CarPlanner-IL (Ours) — IL-only variant
+- 4 scenario BEV plots
+- Score values shown: 0.19, 0.87, 0.13, 0.02, 0.13, 0.02, 0.86, 0.48 (approximate)
+- Metric table (right): CLS-NR: 47.50, S-CR: 100.0, S-TTC: 0.0, S-Area: 100.0, S-PR: 31.98
+
+### Row 3: CarPlanner (Ours) — full RL model
+- 4 scenario BEV plots with visibly better trajectory quality
+- Score values shown: 0.19, 1.00, 0.13, 1.00, 0.86, 1.00, 0.86, 1.00 (approximate — notably higher)
+- Metric table (right): CLS-NR: 95.14, S-CR: 100.0, S-TTC: 100.0, S-Area: 100.0, S-PR: 85.07
+
+### Score color legend (inferred from colored lines in score panels)
+- Multiple colored lines per score panel representing different sub-metrics over trajectory steps
+
+## Pertinent Paper Text
+Section V (Experiments): "Qualitative results show CarPlanner (RL) achieves consistently high per-step scores across diverse scenarios, while PDM-Closed and CarPlanner-IL fail in challenging cases (S-TTC=0 for IL indicates time-to-collision violations)."
+
+"CLS-NR (Closed-Loop Score, Non-Reactive) is the primary metric. CarPlanner achieves 95.14 vs PDM-Closed's 47.40 — a ~2× improvement."
+
+## Metric Definitions (from figure)
+- CLS-NR: Closed-Loop Score Non-Reactive (primary metric, higher is better)
+- S-CR: Collision Rate score
+- S-TTC: Time-To-Collision score
+- S-Area: Drivable area score
+- S-PR: Progress score
+
+## Key Takeaway
+RL training (CarPlanner) dramatically improves CLS-NR (47.40 → 95.14) and S-PR (31.08 → 85.07) over both PDM-Closed and the IL-only variant. S-TTC=0 for IL indicates the IL model causes collision-risk scenarios that RL fixes.

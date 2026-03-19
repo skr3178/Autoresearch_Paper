@@ -14,17 +14,75 @@ Read these files completely before writing any code:
 
 You build everything from scratch inside `implementation/`. There is no existing code to modify.
 
+The implementation proceeds through seven phases. Each phase has an exit gate — do not advance until the gate is met. All experiments are preserved (never delete history).
+
+**IMPORTANT: Do NOT run any git commands (git add, git commit, git checkout, git branch, etc.). All work is local only. Never create branches, stage files, or commit anything.**
+
 ---
 
-## Setup
+## Phase 0: Paper Extraction
 
-1. **Run tag**: propose a tag based on today's date (e.g. `paper-mar17`). Branch `autoresearch/<tag>` must not exist.
-2. **Create branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read everything**: `requirements.md`, `failure_patterns.md`, paper in `paper/`.
-4. **Decompose the paper** (see "How to Decompose" below).
-5. **Write `progress.md`**: ordered component checklist with success criteria per component.
-6. **Initialize `results.tsv`** with the header row.
-7. **Commit**: `git add -A && git commit -m "setup: implementation plan"`
+**Goal**: Extract all structured information from the paper PDF into machine-readable artifacts before any analysis or coding.
+
+1. **Extract all figures** from the paper PDF. Save each as a separate image in `paper/images/` named `fig_<N>.png` (e.g. `fig_1.png`, `fig_2.png`). Include sub-figures separately if they represent distinct diagrams.
+
+2. **Annotate each figure** with a companion text file `paper/images/fig_<N>.txt` containing:
+   - The figure's caption (verbatim from the paper)
+   - All textual information visible inside the figure (axis labels, legends, dimension annotations, layer names, arrow labels, etc.)
+   - Pertinent text from the paper body that references or describes the figure — architectural details, dimensions, data flow, design rationale. Cite the section and paragraph.
+
+3. **Extract all equations** into `paper/carplanner_equations.md`. For each equation:
+   - The equation number from the paper
+   - The equation itself (in LaTeX or Unicode math)
+   - The surrounding context: what it computes, which variables are inputs/outputs, any constraints or conditions stated in the text
+
+4. **Extract referenced metrics** into `paper/metrics.md`. For each metric reported in the paper:
+   - Table number and row/column
+   - Metric name, value, and which model/ablation it corresponds to
+   - Any conditions (dataset split, best-of-K, thresholds)
+
+5. **Extract all algorithms/pseudocode** into `paper/algorithms.md`. For each algorithm block:
+   - Algorithm number and name
+   - Full pseudocode verbatim
+   - Inputs, outputs, and any hyperparameters referenced
+   - Which section it appears in
+
+6. **Extract all hyperparameters** into `paper/hyperparameters.md`. For every hyperparameter mentioned anywhere in the paper:
+   - Name and symbol
+   - Value
+   - Where it is used (which module/loss/training stage)
+   - Section/table it appears in
+
+7. **Extract all tables** into `paper/tables.md`. For every table in the paper:
+   - Table number and caption
+   - Full table contents (rows, columns, values)
+   - What the table demonstrates (ablation, comparison, analysis)
+   - Which rows/configurations are the paper's recommended defaults
+
+**Exit gate**: Every figure (annotated), equation, metric, algorithm, hyperparameter, and table from the paper is extracted. These artifacts are the reference source for all subsequent phases.
+
+---
+
+## Phase 1: Paper Contract
+
+**Goal**: Prove you understand what you're implementing before writing any code.
+
+1. **Read everything**: `requirements.md`, `failure_patterns.md`, paper in `paper/`, and the extracted artifacts from Phase 0 (`paper/images/`, `paper/carplanner_equations.md`, `paper/metrics.md`).
+2. **Write `paper_contract.md`** containing:
+   - **Dataset contract**: name, source, format of one sample (type, shape, dtype, value range), train/val/test split sizes, coordinate frame and units (if spatial data), any required preprocessing
+   - **Architecture contract**: every module the paper defines, with input/output shapes in paper notation
+   - **Training contract**: optimizer, LR schedule, batch size, number of steps/epochs, loss function with every term and coefficient mapped: `paper symbol → semantic meaning → value`
+   - **Evaluation contract**: exact metric name, computation procedure (best-of-K or single-sample, thresholds, normalization, GT source, sampling count, seed policy, any paper-specific filtering), how to compare to paper baseline (metric direction, expected value, tolerance given hardware/data differences)
+   - **Inference contract**: how to go from trained model to evaluation output (sampling procedure, post-processing, any schedule differences from training)
+   - **Ambiguity register**: every detail the paper leaves unclear, classified by impact:
+     - **Low**: unlikely to affect metric (e.g. weight init variant). Use simplest default.
+     - **Medium**: may affect metric. Make configurable, note the default and rationale.
+     - **High**: likely affects metric significantly. Implement at least two candidate interpretations in config. Justify the chosen default. Flag for revisiting if metric doesn't match.
+3. **Decompose into components** (see "How to Decompose").
+4. **Write `progress.md`**: ordered component checklist with exit criteria per component.
+5. **Initialize `results.tsv`** with the header row.
+
+**Exit gate**: `paper_contract.md` and `progress.md` are written. Every loss term has a mapping. Every ambiguity is classified.
 
 ---
 
@@ -33,186 +91,256 @@ You build everything from scratch inside `implementation/`. There is no existing
 **Do NOT decompose by paper sections.** Papers are structured for readability, not implementability. Instead:
 
 ### Step 1: Identify the core learning component
-Every paper has one central mechanism that makes it work. Find it. This is what you build and verify first — everything else is downstream.
+Every paper has one central mechanism. Find it. Build and verify it first.
 
 ### Step 2: Order by dependency and risk
-Build dependencies before dependents. Build risky/uncertain components before safe ones. If the core mechanism doesn't work, nothing else matters — so validate it early.
+Build dependencies before dependents. Build risky/uncertain components before safe ones. If the core mechanism doesn't work, nothing else matters.
 
 ### Step 3: Start with the simplest ablation
-If the paper has an ablation table, implement the simplest variant first (e.g. single modality, no auxiliary losses, smallest model). This gives you a working baseline before you add complexity. The ablation table tells you which components contribute most — add those first.
+If the paper has an ablation table, implement the simplest row first (fewest components, single modality, no auxiliary losses). The ablation table tells you which components contribute most — add those in order of impact.
 
 ### Step 4: Plan for staged training
-If the paper has multiple components trained jointly, plan to train them separately first. Joint training often fails due to gradient conflicts. A common pattern: train component A → freeze A → train component B on A's outputs. Only attempt joint training after both work independently.
+If the paper has multiple components trained jointly, plan to train them separately first. Joint training often fails due to gradient conflicts. Common pattern: train A → freeze A → train B on A's outputs. Only attempt joint training after both work independently.
 
 ### Step 5: Multiple config tiers
-Define configs for different scales. You will use these throughout development:
-- **debug**: smallest possible dimensions (2 layers, 64 hidden, batch 2, 10 steps). Runs in <5 seconds. Used to catch shape/dtype/import errors.
-- **smoke**: small but realistic (fewer layers, small batch). Runs in 1-2 minutes. Used to verify loss decreases.
+Define configs for different scales:
+- **debug**: smallest possible dimensions (2 layers, 64 hidden, batch 2, 10 steps). Runs in <5 seconds.
+- **smoke**: small but realistic (fewer layers, small batch). Runs in 1-2 minutes.
 - **full**: paper-scale or hardware-adapted. Used for real training runs.
 
 ---
 
-## Implementation Loop
+## Phase 2: Data Proof
 
-Implement one component at a time, in the order defined in `progress.md`.
+**Goal**: Prove the data pipeline is correct before writing any model code.
 
-### Step 1: Understand before coding
-- Re-read the paper section for this component.
-- Create a mapping table: paper notation → code variable name → meaning. Papers use math notation that doesn't map obviously to code. Making this explicit prevents coefficient inversions, wrong signs, and misattributed terms.
-- If the paper has a multi-step algorithm, write out every step as a numbered comment before coding any of them.
+1. **Load one sample** from disk. Print its type, shape, dtype, value range.
+2. **Visualize it** — render/plot the sample and verify it looks correct (images look like images, coordinates are in the right frame, sequences have expected length).
+3. **Verify shapes** match what `paper_contract.md` specifies.
+4. **Verify units and coordinates** — if spatial data, confirm the coordinate convention matches the paper. Test with a known point if possible.
+5. **Verify split counts** — number of train/val/test samples matches the paper or `requirements.md`.
+6. **Profile the loader**: load 10 batches at batch_size=2, time it. If >2 seconds, vectorize before proceeding.
+7. **Write `data_report.md`** documenting all findings: sample structure, shapes, dtype, value ranges, split sizes, loader throughput, any discrepancies from the paper.
+
+**Exit gate**: `data_report.md` written. Data shapes, types, and splits verified against paper contract.
+
+---
+
+## Phase 3: Component Implementation
+
+**Read `submodules.md` first.** It defines the exact build order for all submodules with input/output contracts and hard verification gates. Work through it strictly in order — **never start submodule N+1 until submodule N's gate is fully met.**
+
+After each submodule gate passes:
+- Mark the submodule checkbox `✅` in `progress.md`
+
+### For each submodule:
+
+#### Step 1: Understand before coding
+- Re-read the paper section referenced in `submodules.md` for this submodule.
+- Update `notation_map.md` with any new notation: `paper symbol → code variable → meaning → value`.
+- If the paper has a multi-step algorithm, write every step as a numbered comment before coding any of them.
 - Check `failure_patterns.md` for relevant warnings.
+- Check the ambiguity register in `paper_contract.md` — any high-impact ambiguities for this submodule?
 
-### Step 2: Implement minimally
-- Create `implementation/<component>.py`.
-- Parameterize all dimensions from a config dict — never hardcode spatial sizes, channel counts, sequence lengths, or vocabulary sizes. You will need to run at different scales.
-- When the paper is ambiguous (missing hyperparameter, unclear architecture detail): implement the simplest interpretation, make it configurable, and add a comment noting the ambiguity and your choice.
+#### Step 2: Implement minimally
+- Create the files listed in `submodules.md` for this submodule.
+- Parameterize all dimensions from a config dict — never hardcode spatial sizes, channel counts, sequence lengths, or vocabulary sizes.
+- Implement only what is needed for this submodule's gate. Do not pre-implement the next submodule.
 
-### Step 3: Test before moving on
-Write `implementation/test_<component>.py` with:
+#### Step 3: Verify (not just test)
 
-1. **Shape assertions**: verify every tensor shape matches what you expect from the paper.
-2. **Dtype assertions**: verify no silent type promotions (e.g. int16 → int64 through masking, float16 → float32 through custom ops).
-3. **Forward + backward pass** at debug config: verifies the component can train.
-4. **Output diversity check**: feed two different inputs → outputs should differ meaningfully. If outputs are near-identical (cosine similarity >0.95), something is collapsing.
-5. **Loss finiteness**: if this component produces a loss, verify it's finite and in a reasonable range.
+Write `implementation/test_<submodule>.py`. The tests must prove correctness, not just executability. Run every test listed in this submodule's **Verification gate** in `submodules.md`, plus:
 
-Run: `uv run implementation/test_<component>.py`
+**Executability tests:**
+1. Shape assertions — verify every tensor shape matches paper contract and `submodules.md` spec.
+2. Dtype assertions — verify no silent type promotions.
+3. Forward + backward pass at debug config.
 
-### Step 4: Decide
-- **PASS**: Mark `✅` in `progress.md`, `git commit`.
-- **FAIL**: Debug (max 3 attempts). If stuck, mark `⚠️ BLOCKED` with notes and move on.
+**Correctness tests:**
+4. Equation oracle test — for at least one equation, hand-compute the expected output for a tiny input (2-3 elements) and assert the code produces the same result within tolerance.
+5. Tiny overfit test — can the submodule memorize 1-2 samples? If not, something fundamental is wrong.
+6. Output diversity — feed two different inputs, verify outputs differ (cosine similarity <0.95).
+7. Sign/direction test — where applicable, verify masks, schedules, or gradients have the correct sign/direction.
+8. Invariance/equivariance test — if the submodule should be invariant or equivariant to something (permutation, rotation, translation), test it.
+
+Run: `uv run implementation/test_<submodule>.py`
+
+#### Step 4: Document proof
+After tests pass, update `proof.md` for this submodule:
+- What assumptions were made and why
+- What evidence confirms correctness (which tests pass, what they verify)
+- Any remaining uncertainty
+
+#### Step 5: Gate check and commit
+- **PASS**: Verifier gate — re-read the submodule code as if you didn't write it. Try to find a bug. Check it against the paper equation line by line. Confirm every checkbox in this submodule's gate in `submodules.md` is met. Then:
+  - Mark `✅` in `progress.md`
+  - Only now, proceed to the next submodule in `submodules.md`.
+- **FAIL**: Debug (max 3 attempts). If stuck, mark `⚠️ BLOCKED` in `progress.md` with notes and the specific failing gate check. Do not skip to the next submodule — a blocked submodule means the one that depends on it cannot be built correctly.
 
 ---
 
-## Integration
+## Phase 4: Integration Proof
 
-Once components are individually tested:
+**Goal**: Prove the full pipeline works end-to-end before investing GPU hours.
 
-1. Wire everything into `implementation/train.py`.
-2. **Single-step smoke test** at debug config: one forward + backward pass. This catches cross-module shape/dtype mismatches and import errors.
-3. **10-step smoke test** at smoke config: verify loss decreases (even slightly). If loss is flat or increasing after 10 steps, something is wrong — do not proceed to full training.
-4. **Profile the data loader**: load 10 batches, time it. If >2 seconds for 10 batches at batch_size=2, the loader is too slow — vectorize any per-element loops before proceeding.
-5. `git commit` working integration.
+1. Wire all components into `implementation/train.py`.
+2. **Single-step test** at debug config: one forward + backward pass. Catches cross-module shape/dtype mismatches.
+3. **10-step test** at smoke config: verify loss decreases. If loss is flat or increasing after 10 steps, do not proceed.
+4. **Tiny overfit test** at smoke config: train on 1-2 samples for many steps. The model should memorize them. If it can't overfit a trivial dataset, the learning pipeline is broken.
+5. **Reproducibility check**: run the 10-step test twice with the same seed. Results must match exactly. If they don't, there's non-determinism that will make experiments unreliable.
+
+**Exit gate**: Loss decreases over 10 steps. Model can overfit 1-2 samples. Two identical runs produce identical results.
 
 ---
 
-## Training
+## Phase 5: Benchmarking
 
-### First run
-Run training at smoke config first, not full scale:
+**Goal**: Get a working metric and compare to the paper. Prefer ablation parity over headline-number chasing.
+
+### First run: smoke config
 ```
 uv run implementation/train.py --config smoke > run.log 2>&1
 ```
+Verify loss decreases, no NaN, memory is reasonable.
 
-Verify:
-- Loss decreases over the run
-- No NaN or Inf values
-- Memory usage is reasonable
-- Outputs at end of training look plausible (if applicable)
-
-Only after smoke config works, run at full config with the time budget from `requirements.md`:
+### Second run: full config
 ```
 uv run implementation/train.py --config full > run.log 2>&1
 ```
+Parse metric (grep pattern from `requirements.md`), log to `results.tsv`.
+
+### Reproducibility gate
+Run full config twice. Results must be within tolerance (define tolerance in `paper_contract.md`). If not, the result is exploratory — not evidence.
+
+### Ablation parity check
+If the paper has an ablation table:
+1. Run the simplest ablation first (baseline).
+2. Add one component at a time.
+3. Verify each addition moves the metric in the **same direction** as the paper reports.
+
+Reproducing the ablation deltas is stronger evidence of a correct implementation than matching a headline score.
 
 ### What to log during training
-Log these every N steps (N ≈ 100):
-- **Each loss component separately** — not just total loss. When total loss misbehaves, you need to know which term is responsible.
-- **Gradient norm** per parameter group — catches exploding/vanishing gradients before they cause NaN.
-- **Any component-specific health metric** — whatever tells you the component is working (utilization rates, entropy, reconstruction quality, etc.)
+Log every N steps (N ≈ 100):
+- Each loss component separately — never just total loss.
+- Gradient norm per parameter group.
+- Any component-specific health metric.
 
-### Fast-fail checks after each run
+### Fast-fail checks
 ```
 grep "^metric:\|^loss:\|^ERROR\|Traceback\|NaN\|nan" run.log | head -20
 ```
+If crashed: `tail -n 80 run.log` → check `failure_patterns.md` → fix root cause.
 
-**If crashed**: `tail -n 80 run.log` → read the stack trace → check `failure_patterns.md` for matching pattern → fix root cause → re-run.
-
-**If completed**: parse the metric (grep pattern from `requirements.md`), log to `results.tsv`.
-
-**If metric is far from paper baseline**: add targeted diagnostics. Don't just re-run with different hyperparameters — diagnose first:
-- Log intermediate representations' statistics (mean, std) at key points in the model
-- Verify outputs differ for different inputs (cosine similarity check)
-- Log loss components to identify which term dominates or misbehaves
-- Check if training and inference pipelines are consistent (same preprocessing, same noise schedule endpoints, etc.)
+**Exit gate**: At least one full run completes with a real metric value. Reproducibility verified. If paper has ablations, at least the baseline ablation reproduces.
 
 ---
 
-## Logging Results
+## Phase 6: Improvement
 
-`results.tsv` — tab-separated, NOT comma-separated:
+Once benchmarking produces a working baseline, improve toward the paper's reported result.
 
-```
-commit	metric	memory_gb	status	description
-```
+Each experiment:
 
-1. `commit` — short git hash (7 chars)
-2. `metric` — evaluation metric value (0.000000 for crashes)
-3. `memory_gb` — peak VRAM in GB (0.0 for crashes)
-4. `status` — `keep`, `discard`, or `crash`
-5. `description` — short note on what changed
-
----
-
-## The Outer Loop
-
-Once training runs end-to-end, enter the improvement loop:
-
-LOOP FOREVER:
-
-1. Compare your metric to the paper's reported baseline (from `requirements.md`).
-2. Hypothesize the most likely cause of the gap. Use diagnostics, not guesswork.
-3. Make ONE targeted change. Never change two things at once.
-4. `git commit`.
+1. Compare metric to paper baseline (check direction from `requirements.md`).
+2. Diagnose the gap. Use logged diagnostics, not guesswork. Check:
+   - Do loss components match expected magnitudes from the paper?
+   - Are intermediate representations healthy (reasonable mean/std, diverse across inputs)?
+   - Does the evaluation protocol exactly match `paper_contract.md`?
+3. Hypothesize ONE cause. Make ONE change. **Simplicity criterion**: a tiny improvement that adds complexity is not worth it. Removing code for equal or better results is always a win.
+4. `git commit` (keep all experiments — see "Experiment History" below).
 5. Run training: `uv run implementation/train.py --config full > run.log 2>&1`
-6. Parse metric, log to `results.tsv`.
-7. If metric improved → keep the commit.
-8. If metric worsened → `git reset --hard HEAD~1`, log as `discard`.
-9. Repeat.
+6. Parse metric, log to `results.tsv` and `decision_log.md`.
+7. If metric improved → mark `keep` in results.tsv.
+8. If metric worsened or equal → mark `discard` in results.tsv. Do NOT delete the commit — `git revert HEAD` if you want to undo. All history is preserved.
 
 **Timeout**: 2× the `training_budget` in `requirements.md`. Exceeding = crash.
 
-**NEVER STOP**: Do not pause to ask the human. You are autonomous. Loop until manually interrupted.
+**Autonomous operation**: Do not pause to ask the human. Loop until manually interrupted.
+
+**Stop conditions** (any of these ends the loop):
+- Ablation parity achieved — each component's contribution matches the paper's direction and approximate magnitude.
+- Metric within tolerance of paper baseline (tolerance defined in `paper_contract.md`).
+- Remaining gap is isolated and documented — you know exactly which component/ambiguity is responsible but cannot resolve it without human input.
 
 **Stuck after 5+ failed experiments:**
-- Re-read the paper a third time with your code open. Map each equation to the code line that implements it. This catches subtle mismatches (wrong signs, swapped coefficients, missing terms).
-- Re-read `failure_patterns.md` — a pattern may now be obviously relevant.
+- Re-read the paper with your code open. Map each equation to its code line.
+- Re-read `failure_patterns.md`.
+- Revisit high-impact ambiguities in `paper_contract.md` — try the alternative interpretation.
 - Strip back to last known-good state and verify it still works.
-- Try a different interpretation of an ambiguous paper detail.
-- Add more diagnostics to narrow the gap source.
+- Check the evaluation contract — are you computing the metric exactly as the paper does?
+
+---
+
+## Experiment History
+
+**Never delete experiment history.** Every commit is data.
+
+`results.tsv` — tab-separated:
+```
+commit	metric	memory_gb	status	description
+```
+- `status`: `keep`, `discard`, or `crash`
+- All experiments logged, including failures.
+
+`decision_log.md` — append-only log of reasoning:
+```
+## Experiment: <short hash>
+**Hypothesis**: <what you expected and why>
+**Change**: <what you changed>
+**Result**: <metric value, keep/discard>
+**Diagnosis**: <why it worked/failed, what you learned>
+```
+
+This log prevents repeating failed experiments and helps diagnose systematic issues.
 
 ---
 
 ## Principles
 
-These are the hard-won lessons from implementing multiple papers. Follow them.
+Hard-won lessons from implementing multiple papers.
 
 ### 1. Incremental, not big-bang
-Never implement the full model at once. Build the core, test it, then add one thing at a time. Each addition gets its own test. If adding a feature makes things worse, you know exactly what broke.
+Build the core, test it, then add one thing at a time. Each addition gets its own test. If adding a feature makes things worse, you know exactly what broke.
 
 ### 2. Paper ≠ implementation
-The paper presents an idealized system. Your implementation must handle: hardware constraints (GPU memory, batch size), training stability (gradient clipping, learning rate), data pipeline performance (vectorization, caching), and numerical precision (mixed precision, dtype casting). Adapt early — not after full training fails.
+The paper is idealized. Your implementation must handle hardware constraints, training stability, data pipeline performance, and numerical precision. Adapt early.
 
 ### 3. Monitor components, not just totals
-Logging only total loss hides which component is failing. Log every loss term separately. Log gradient norms. Log any health metric specific to your components. When something goes wrong, you need to see WHERE.
+Log every loss term separately. Log gradient norms. When something goes wrong, you need to see WHERE.
 
 ### 4. Verify math line-by-line
-Create an explicit mapping table: paper equation → code line. Loss coefficient inversions, wrong activation functions, and missing algorithm steps are the most common and most devastating bugs. They're also invisible in shape tests — only careful math review catches them.
+Maintain `notation_map.md`: paper equation → code line. Loss coefficient inversions, wrong activations, and missing algorithm steps are the most common and most devastating bugs. They're invisible in shape tests.
 
 ### 5. Separate training stages when joint fails
-If joint training diverges or produces bad results, split into stages: train component A, freeze it, train component B. This is almost always more stable and often how the paper's authors actually trained it (even if the paper doesn't say so).
+Default to staged training. Joint training only after components work independently.
 
 ### 6. Cache frozen computations
-If a component is frozen during later training stages, precompute its outputs to disk once. Never re-run a frozen component inside the training loop. This often provides 10-100× speedup.
+Precompute frozen component outputs to disk. Never re-run a frozen component in the training loop. 10-100× speedup.
 
 ### 7. Test with simple data first
-If possible, validate your pipeline on simple/synthetic data before real data. Simple data lets you visualize outputs, verify correctness by eye, and iterate in seconds instead of hours.
+Validate the pipeline on simple/synthetic data before real data. Simple data lets you verify correctness by eye.
 
-### 8. Make everything configurable
-When the paper is ambiguous, don't hardcode your guess. Make it a config parameter with a comment explaining the ambiguity. You'll need to try different values.
+### 8. Make ambiguities configurable
+Don't hardcode guesses. Make them config parameters with comments citing the paper section.
 
-### 9. Read the ablation table
-The ablation table tells you what matters and what doesn't. Implement high-impact components first. If a component provides <1% improvement in the paper, defer it.
+### 9. Ablation parity over headline numbers
+Reproducing the ablation table (each component's delta) is stronger evidence than matching a raw score that could be right for the wrong reasons.
 
 ### 10. Profile before optimizing
-Measure where time is actually spent before optimizing. Often the bottleneck is data loading (Python loops over spatial data), not model computation. A 50× speedup in the data loader matters more than any model optimization.
+Measure where time is spent. Data loader bottlenecks matter more than model optimizations.
+
+### 11. Preserve all history
+Every experiment is data. Never `git reset --hard`. Use `git revert` if you need to undo. Log everything in `results.tsv` and `decision_log.md`.
+
+### 12. Training completed ≠ correct
+A run that finishes without crashing proves nothing about correctness. Verify outputs, check ablation deltas, test evaluation protocol, compare intermediate quantities.
+
+
+
+
+
+to the instruction set for the paper implementor,we added these specific tests: 1. Figure extractor from the paper. all the figures should be clipped and stored in a
+seperate folder called images. 2. Each figure should be accompanied by a text file which includes the caption for the figure, extract textual information in the    
+figure, and extracts pertaining text from the paper pertaining the figure- say architectural details, dimensions etc. 3. all equation listed should eb extracted    
+from the figure into a file called equations. 4. referenced test metrics should be extracted too.

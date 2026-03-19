@@ -1,0 +1,38 @@
+## Caption
+Figure 6. The computational graph of differentiable loss (a) and RL (b) framework for optimizing metrics such as displacement errors, collision avoidance, and adherence to drivable area.
+
+## Visual Content
+Two sub-figures showing computation graphs:
+
+### (a) Differentiable loss (IL training)
+- Top row: Planner box with input s_0 outputting L_1, L_2, ..., L_T (loss values at each step)
+- Arrows flow: s_0 → Planner → {L_1, L_2, ..., L_T}
+- All loss nodes connected with "Forward (with gradient)" arrows (solid green)
+- Losses flow back via backpropagation
+- Label at bottom: "Forward (with gradient)" and "Backward"
+
+### (b) RL framework
+- Top row: Planner box with input s_0 outputting R_1, R_2, ..., R_T (rewards at each step)
+- Middle row: reward nodes R_1...R_T
+- Bottom row: L_1, L_2, ..., L_T (loss nodes derived from rewards)
+- Two arrow types:
+  - "Forward (with gradient)" — solid arrows from Planner to L nodes
+  - "Forward (without gradient)" — dashed arrows from Planner to R nodes (rewards are non-differentiable)
+- Rewards R_t are computed from non-differentiable metrics (collision, drivable area, etc.)
+- Losses L_t are differentiable surrogates (PPO policy gradient)
+
+### Also visible: Table 11 fragment (top of image)
+- Table showing "Effect of different mode representations" with columns: IL, Consistent, Vanilla, Lon-Lat
+- Rows with checkmarks/crosses for RL Consistent/Vanilla/Lon-Lat combinations
+
+## Pertinent Paper Text
+Section III-C (Training): "Direct optimization of closed-loop metrics is non-differentiable. We use RL (PPO) to optimize rewards derived from these metrics. The RL computational graph (b) shows that rewards R_t are computed without gradients through a world model, while policy gradients flow through the differentiable loss L_t."
+
+"For IL training (a), we use differentiable losses (L1 on waypoints, cross-entropy on mode, side-task ego prediction) with standard backpropagation."
+
+## Architectural Details
+- IL training: standard backprop, differentiable L1/CE losses
+- RL training: PPO, rewards from closed-loop metrics (non-differentiable)
+- Two-stage: IL pre-training first, then RL fine-tuning
+- Gradient flow: only through policy parameters, not through reward computation
+- T steps in the computation graph matching the trajectory horizon

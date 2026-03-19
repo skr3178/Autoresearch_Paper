@@ -1,49 +1,48 @@
-# Implementation Progress
+# Progress Checklist
 
-<!-- The agent overwrites this file during Setup (Phase 0) with the actual component list for the current paper. -->
-<!-- This is a template showing the expected format. -->
+## Component Checklist
 
-**Paper:** <!-- Title from requirements.md -->
-**Branch:** <!-- autoresearch/<tag> -->
-**Started:** <!-- date -->
+1. **Data Loader**
+   - Exit Criteria: Successfully loads and preprocesses data, matches expected shapes and types.
 
----
+2. **Transition Model**
+   - Exit Criteria: Pre-trained, outputs match expected future states.
 
-## Components
+3. **Mode Selector**
+   - Exit Criteria: Correctly predicts trajectory modality, high accuracy on validation.
 
-<!-- Agent fills this in after reading the paper. One checkbox per implementation unit. -->
-<!-- Format: [ ] component_name — brief description -->
+4. **Auto-regressive Policy**
+   - Exit Criteria: Generates plausible trajectories, passes overfit test.
 
-- [ ] `data` — dataset loading and preprocessing
-- [ ] `model` — main architecture
-- [ ] `loss` — loss function(s)
-- [ ] `train` — training loop integration
-- [ ] `eval` — metric computation
+5. **Consistency Module**
+   - Exit Criteria: Penalizes implausible transitions, improves trajectory coherence.
 
----
+6. **Critic**
+   - Exit Criteria: Accurately estimates value function, aids in advantage computation.
 
-## Status
+7. **PPO Loop**
+   - Exit Criteria: Successfully orchestrates PPO updates, improves policy performance.
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| data | pending | |
-| model | pending | |
-| loss | pending | |
-| train | pending | |
-| eval | pending | |
+8. **Expert Refinement**
+   - Exit Criteria: Fine-tunes policy using expert demonstrations, improves performance.
 
----
+9. **Rule Selector**
+   - Exit Criteria: Selects best trajectory based on rule-based criteria.
 
-## Blockers
+## Exit Gate
 
-<!-- Agent documents components that failed after 3 attempts -->
-<!-- Format: ⚠️ component — what failed, what was tried -->
+- Each component must meet its exit criteria before proceeding to the next.
+- **Debug Config**: Verify basic functionality and shape compliance.
+- **Smoke Config**: Ensure loss decreases and model trains without errors.
+- **Full Config**: Achieve performance metrics close to those reported in the paper.
 
-(none yet)
-
----
-
-## Experiment Log Summary
-
-<!-- Agent appends key findings here as training runs accumulate -->
-<!-- Full log is in results.tsv -->
+## Current Progress
+- [ ] Data Loader
+- [ ] Transition Model
+- [ ] Mode Selector
+- [ ] Auto-regressive Policy
+- [ ] Consistency Module
+- [ ] Critic
+- [ ] PPO Loop
+- [ ] Expert Refinement
+- [ ] Rule Selector
