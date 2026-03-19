@@ -67,6 +67,24 @@ The implementation proceeds through seven phases. Each phase has an exit gate �
 
 **Goal**: Prove you understand what you're implementing before writing any code.
 
+#### Phase Brief — write `phase1_brief.md` before doing anything else
+
+Before writing `paper_contract.md`, read all Phase 0 artifacts and write `phase1_brief.md` containing:
+
+1. **Architecture summary**: In your own words, what is the paper's core mechanism? What problem does it solve and how? (3-5 sentences, no jargon — if you can't explain it simply, you don't understand it yet.)
+2. **Key equations**: List every equation that will need to be implemented. For each: equation number, what it computes, which module uses it.
+3. **Key figures**: For each architecture figure, describe what components are shown and how data flows between them. Reference figure numbers.
+4. **Key algorithms**: For each algorithm block, list its steps and which phase/module it belongs to.
+5. **Training stages**: Does the paper train components jointly or in stages? In what order? What is frozen at each stage?
+6. **Evaluation protocol**: Exactly how is the reported metric computed? Best-of-K? Single sample? What benchmark split?
+7. **Open questions**: What is ambiguous or underspecified in the paper? List each uncertainty and your planned default.
+
+This brief is a **checkpoint**: it must reference specific equation numbers, figure numbers, and algorithm names from the paper — not generic prose. If you cannot fill a section with paper-specific content, re-read the relevant artifact.
+
+**Brief gate**: `phase1_brief.md` must exist and contain at least one equation number, one figure number, and one algorithm reference before proceeding to write `paper_contract.md`.
+
+---
+
 1. **Read everything**: `requirements.md`, `failure_patterns.md`, paper in `paper/`, and the extracted artifacts from Phase 0 (`paper/images/`, `paper/carplanner_equations.md`, `paper/metrics.md`).
 2. **Write `paper_contract.md`** containing:
    - **Dataset contract**: name, source, format of one sample (type, shape, dtype, value range), train/val/test split sizes, coordinate frame and units (if spatial data), any required preprocessing
@@ -114,6 +132,20 @@ Define configs for different scales:
 
 **Goal**: Prove the data pipeline is correct before writing any model code.
 
+#### Phase Brief — write `phase2_brief.md` before writing any code
+
+Read the dataset section of the paper, `paper_contract.md`, and `paper/images/` figures that show data examples or preprocessing pipelines. Then write `phase2_brief.md` containing:
+
+1. **Dataset identity**: Name, source, version, license. How many scenarios/samples in train/val/test splits (exact numbers from paper).
+2. **Sample anatomy**: For each model input, state its name, shape, dtype, value range, coordinate frame, and units — derived from the paper, not assumed.
+3. **Preprocessing steps**: Every transformation applied to raw data before it reaches the model. List them in order with the paper section or equation that specifies each.
+4. **Figures referenced**: Which figures show data examples, BEV maps, or preprocessing diagrams? Describe what each shows.
+5. **Known gotchas**: Any coordinate convention, normalisation, or frame-of-reference issue that could silently produce wrong data.
+
+**Brief gate**: `phase2_brief.md` must exist and reference specific paper section numbers and at least one figure before proceeding to write any loader code.
+
+---
+
 1. **Load one sample** from disk. Print its type, shape, dtype, value range.
 2. **Visualize it** — render/plot the sample and verify it looks correct (images look like images, coordinates are in the right frame, sequences have expected length).
 3. **Verify shapes** match what `paper_contract.md` specifies.
@@ -138,6 +170,35 @@ Do not declare Phase 2 complete until you have run both scripts and confirmed ex
 
 After each submodule gate passes:
 - Mark the submodule checkbox `✅` in `progress.md`
+
+#### Phase Brief — write `phase3_brief.md` once before starting any submodule
+
+Before writing any implementation code, write `phase3_brief.md` containing a section for **each submodule** in `submodules.md`:
+
+```
+## Submodule N: <name>
+
+**Paper grounding**
+- Equations: <list equation numbers that this submodule implements>
+- Figures: <list figure numbers and which components in those figures map to this submodule>
+- Algorithm: <algorithm name/number and which steps belong to this submodule, if any>
+
+**Input → Output** (from paper, not from submodules.md)
+- Input: <name, shape, dtype, value range as stated in paper>
+- Output: <name, shape, dtype, value range as stated in paper>
+
+**Key design decisions**
+- <Any ambiguity in the paper and the chosen default>
+- <Any deviation from the paper and why>
+
+**Verification plan**
+- Equation oracle: which equation will be hand-verified, and how?
+- Overfit target: what does "memorize 2 samples" mean for this submodule?
+```
+
+This brief is your implementation contract. If a section cannot be filled with paper-specific content (equation numbers, figure numbers), re-read the relevant artifact before proceeding.
+
+**Brief gate**: `phase3_brief.md` must exist and contain at least one equation number or figure number per submodule before writing any submodule code.
 
 ### For each submodule:
 
@@ -230,6 +291,23 @@ Only after completing this mapping and resolving all `⚠️` entries may you ma
 
 **Goal**: Prove the full pipeline works end-to-end before investing GPU hours.
 
+#### Phase Brief — write `phase4_brief.md` before writing `train.py`
+
+Read Figure 2 (or whichever figure shows the full system architecture), `phase3_brief.md`, and all submodule contracts. Write `phase4_brief.md` containing:
+
+1. **Data flow diagram**: For each component in order, state:
+   - Component name → output tensor name, shape, dtype
+   - Which next component consumes it and under what key
+   - Any shape transformation between components
+2. **Loss assembly**: List every loss term, its coefficient (from paper), which component produces it, and how they are combined. Reference the paper equation number.
+3. **Training stages**: If the paper trains in stages (pretrain → finetune, IL → RL), describe each stage: which components are active, which are frozen, what data is used.
+4. **Figures referenced**: Which figure(s) show the full training loop? Describe any data flow arrows that are not yet implemented by a submodule.
+5. **Integration risks**: Which component interfaces are most likely to have shape/dtype mismatches? Why?
+
+**Brief gate**: `phase4_brief.md` must exist and contain the full data flow (every component → output shape) and the loss assembly equation before writing `train.py`.
+
+---
+
 1. Wire all components into `implementation/train.py`.
 2. **Single-step test** at debug config: one forward + backward pass. Catches cross-module shape/dtype mismatches.
 3. **10-step test** at smoke config: verify loss decreases. If loss is flat or increasing after 10 steps, do not proceed.
@@ -243,6 +321,21 @@ Only after completing this mapping and resolving all `⚠️` entries may you ma
 ## Phase 5: Benchmarking
 
 **Goal**: Get a working metric and compare to the paper. Prefer ablation parity over headline-number chasing.
+
+#### Phase Brief — write `phase5_brief.md` before running any training
+
+Read the paper's results section, `paper/metrics.md`, `paper/tables.md`, and `paper_contract.md`. Write `phase5_brief.md` containing:
+
+1. **Target metric**: Exact name, formula, and paper value to reproduce. Which table and row?
+2. **Evaluation protocol**: Step-by-step procedure to compute the metric from model outputs — best-of-K sampling count, any filtering, normalisation, GT source, benchmark split name.
+3. **Baseline ladder**: List every row in the paper's main results table that you intend to reproduce, in order from simplest to hardest. For each row: configuration name, expected metric value, which components are active.
+4. **Ablation table**: If the paper has an ablation, list each ablation row with expected metric delta. This is your primary correctness signal — matching ablation directions is stronger evidence than matching headline numbers.
+5. **Figures referenced**: Which figures show training curves, metric vs. epoch, or qualitative results? What trends should you expect to see?
+6. **Hardware adaptation**: If paper used different hardware, note any changes to batch size, learning rate scaling, or step count, and the paper section that justifies each.
+
+**Brief gate**: `phase5_brief.md` must exist and contain the target metric value, the exact evaluation protocol steps, and the ablation table before starting any training run.
+
+---
 
 ### First run: smoke config
 ```
@@ -286,6 +379,20 @@ If crashed: `tail -n 80 run.log` → check `failure_patterns.md` → fix root ca
 ## Phase 6: Improvement
 
 Once benchmarking produces a working baseline, improve toward the paper's reported result.
+
+#### Phase Brief — write `phase6_brief.md` before starting the improvement loop
+
+Read `phase5_brief.md`, `results.tsv`, and the paper's ablation section. Write `phase6_brief.md` containing:
+
+1. **Current gap**: Actual metric achieved vs. paper target. Which ablation rows have been matched and which haven't?
+2. **Gap diagnosis**: For each component of the gap, cite the paper section or figure that describes the expected behaviour, and describe how the current implementation deviates.
+3. **Improvement hypotheses**: List candidate causes in order of estimated impact. For each: what paper evidence supports this hypothesis, and what single change would test it?
+4. **High-impact ambiguities**: From `paper_contract.md`'s ambiguity register, which medium/high-impact items have not yet been tested? List the alternative interpretations to try.
+5. **Stop criteria**: Exact numeric targets that define "close enough" — derived from `paper_contract.md` tolerance definition.
+
+**Brief gate**: `phase6_brief.md` must exist and reference the current metric gap with specific numbers and at least two paper-grounded improvement hypotheses before starting the experiment loop.
+
+---
 
 Each experiment:
 
