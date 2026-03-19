@@ -1,0 +1,55 @@
+## Caption
+Figure 2. Overview of the CarPlanner architecture. (Inferred from figure content — exact caption may vary in paper.)
+
+## Visual Content
+Full system architecture diagram with three main stages (left to right):
+
+### Stage 1: NR Transition Model + Mode Selector (left block)
+- Input: s_0 — current observation (BEV with ego vehicle shown as green car, other agents as grey boxes)
+- **Non-reactive Transition Model** (blue box, top-left):
+  - Takes s_0 as input
+  - Outputs "Previewed World" — a predicted future scene BEV (shown as small BEV thumbnail)
+  - Arrow feeds previewed world into the Trajectory Generator stage
+- **Mode Selector** (orange box, bottom-left):
+  - Takes s_0 as input
+  - Outputs c (mode variable, shown as a grid/heatmap of mode scores)
+  - c is labeled "Consistent Mode as Query" — fed rightward into Auto-regressive Policy
+  - Also outputs "Mode Scores" (shown as orange heatmap grid)
+
+### Stage 2: Trajectory Generator (center, large green box)
+- **Auto-regressive Policy** (large green box labeled "Auto-regressive Policy"):
+  - Receives: previewed world states s_0, s_1, s_2, ...
+  - Receives: mode c as consistent query
+  - Uses IVM (Iterative Vision-based Motion) modules at each step (yellow boxes labeled "IVM")
+  - Generates actions a_0, a_1, ... autoregressively
+  - States s_0 → IVM → a_0, then s_1 → IVM → a_1, etc.
+  - States s_1, s_2 shown as BEV thumbnails (dashed boxes) above the IVM modules
+
+### Stage 3: Rule-augmented Selector (right block)
+- **Rule Selector** (yellow box, right):
+  - Input: multi-modal trajectories (shown as BEV thumbnail with multiple colored trajectory lines)
+  - Input: heatmap score grid (orange gradient)
+  - Output: "Ego-planned trajectory" (BEV thumbnail with single green trajectory line)
+  - Selects the best trajectory among K candidates using rule-based criteria
+
+### Bottom Labels (stage groupings)
+- Left: "NR Transition Model — Mode Selector"
+- Center: "Trajectory Generator"
+- Right: "Rule-augmented Selector"
+
+## Pertinent Paper Text
+Section III (Method): "CarPlanner consists of three components: (1) a Non-Reactive (NR) Transition Model that previews the future world without ego intervention, (2) a Mode Selector that predicts a consistent latent mode c from the initial observation, and (3) an Auto-regressive Policy conditioned on c that generates the trajectory step by step. At inference, a Rule Selector picks the best trajectory from K sampled candidates."
+
+Section III-A: "The NR Transition Model P_τ(s^{1:N}_{t+1} | s_t) models other agents' behavior independently of the ego action, providing a previewed world for the policy."
+
+Section III-B: "The Mode Selector P(c | s_0) predicts the latent mode c once at the initial state and passes it as a fixed query to the Auto-regressive Policy π(a_t | s_t, c) at every step t."
+
+## Architectural Details
+- s_0: initial BEV state (map + ego history + agent boxes)
+- c: discrete or continuous latent mode variable, shape implied as grid (K modes)
+- IVM: per-step vision-based motion module inside the auto-regressive policy
+- a_t: action at step t (ego waypoint or control)
+- s_t: state at step t (BEV raster)
+- T steps of autoregression, states s_0...s_T
+- K candidate trajectories fed to Rule Selector at inference
+- Non-reactive transition model is frozen during RL training (pre-trained separately)

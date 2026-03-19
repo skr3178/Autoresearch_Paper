@@ -14,7 +14,52 @@ Read these files completely before writing any code:
 
 You build everything from scratch inside `implementation/`. There is no existing code to modify.
 
-The implementation proceeds through six phases. Each phase has an exit gate — do not advance until the gate is met. All experiments are preserved (never delete history).
+The implementation proceeds through seven phases. Each phase has an exit gate — do not advance until the gate is met. All experiments are preserved (never delete history).
+
+**IMPORTANT: Do NOT run any git commands (git add, git commit, git checkout, git branch, etc.). All work is local only. Never create branches, stage files, or commit anything.**
+
+---
+
+## Phase 0: Paper Extraction
+
+**Goal**: Extract all structured information from the paper PDF into machine-readable artifacts before any analysis or coding.
+
+1. **Extract all figures** from the paper PDF. Save each as a separate image in `paper/images/` named `fig_<N>.png` (e.g. `fig_1.png`, `fig_2.png`). Include sub-figures separately if they represent distinct diagrams.
+
+2. **Annotate each figure** with a companion text file `paper/images/fig_<N>.txt` containing:
+   - The figure's caption (verbatim from the paper)
+   - All textual information visible inside the figure (axis labels, legends, dimension annotations, layer names, arrow labels, etc.)
+   - Pertinent text from the paper body that references or describes the figure — architectural details, dimensions, data flow, design rationale. Cite the section and paragraph.
+
+3. **Extract all equations** into `paper/carplanner_equations.md`. For each equation:
+   - The equation number from the paper
+   - The equation itself (in LaTeX or Unicode math)
+   - The surrounding context: what it computes, which variables are inputs/outputs, any constraints or conditions stated in the text
+
+4. **Extract referenced metrics** into `paper/metrics.md`. For each metric reported in the paper:
+   - Table number and row/column
+   - Metric name, value, and which model/ablation it corresponds to
+   - Any conditions (dataset split, best-of-K, thresholds)
+
+5. **Extract all algorithms/pseudocode** into `paper/algorithms.md`. For each algorithm block:
+   - Algorithm number and name
+   - Full pseudocode verbatim
+   - Inputs, outputs, and any hyperparameters referenced
+   - Which section it appears in
+
+6. **Extract all hyperparameters** into `paper/hyperparameters.md`. For every hyperparameter mentioned anywhere in the paper:
+   - Name and symbol
+   - Value
+   - Where it is used (which module/loss/training stage)
+   - Section/table it appears in
+
+7. **Extract all tables** into `paper/tables.md`. For every table in the paper:
+   - Table number and caption
+   - Full table contents (rows, columns, values)
+   - What the table demonstrates (ablation, comparison, analysis)
+   - Which rows/configurations are the paper's recommended defaults
+
+**Exit gate**: Every figure (annotated), equation, metric, algorithm, hyperparameter, and table from the paper is extracted. These artifacts are the reference source for all subsequent phases.
 
 ---
 
@@ -22,9 +67,8 @@ The implementation proceeds through six phases. Each phase has an exit gate — 
 
 **Goal**: Prove you understand what you're implementing before writing any code.
 
-1. **Create branch**: `git checkout -b autoresearch/<tag>` (tag based on today's date, e.g. `paper-mar17`).
-2. **Read everything**: `requirements.md`, `failure_patterns.md`, paper in `paper/`.
-3. **Write `paper_contract.md`** containing:
+1. **Read everything**: `requirements.md`, `failure_patterns.md`, paper in `paper/`, and the extracted artifacts from Phase 0 (`paper/images/`, `paper/carplanner_equations.md`, `paper/metrics.md`).
+2. **Write `paper_contract.md`** containing:
    - **Dataset contract**: name, source, format of one sample (type, shape, dtype, value range), train/val/test split sizes, coordinate frame and units (if spatial data), any required preprocessing
    - **Architecture contract**: every module the paper defines, with input/output shapes in paper notation
    - **Training contract**: optimizer, LR schedule, batch size, number of steps/epochs, loss function with every term and coefficient mapped: `paper symbol → semantic meaning → value`
@@ -34,12 +78,11 @@ The implementation proceeds through six phases. Each phase has an exit gate — 
      - **Low**: unlikely to affect metric (e.g. weight init variant). Use simplest default.
      - **Medium**: may affect metric. Make configurable, note the default and rationale.
      - **High**: likely affects metric significantly. Implement at least two candidate interpretations in config. Justify the chosen default. Flag for revisiting if metric doesn't match.
-4. **Decompose into components** (see "How to Decompose").
-5. **Write `progress.md`**: ordered component checklist with exit criteria per component.
-6. **Initialize `results.tsv`** with the header row.
-7. **Commit**: `git add -A && git commit -m "phase 1: paper contract"`
+3. **Decompose into components** (see "How to Decompose").
+4. **Write `progress.md`**: ordered component checklist with exit criteria per component.
+5. **Initialize `results.tsv`** with the header row.
 
-**Exit gate**: `paper_contract.md` and `progress.md` are committed. Every loss term has a mapping. Every ambiguity is classified.
+**Exit gate**: `paper_contract.md` and `progress.md` are written. Every loss term has a mapping. Every ambiguity is classified.
 
 ---
 
@@ -78,54 +121,61 @@ Define configs for different scales:
 5. **Verify split counts** — number of train/val/test samples matches the paper or `requirements.md`.
 6. **Profile the loader**: load 10 batches at batch_size=2, time it. If >2 seconds, vectorize before proceeding.
 7. **Write `data_report.md`** documenting all findings: sample structure, shapes, dtype, value ranges, split sizes, loader throughput, any discrepancies from the paper.
-8. **Commit**: `git add -A && git commit -m "phase 2: data proof"`
 
-**Exit gate**: `data_report.md` committed. Data shapes, types, and splits verified against paper contract.
+**Exit gate**: `data_report.md` written. Data shapes, types, and splits verified against paper contract.
 
 ---
 
 ## Phase 3: Component Implementation
 
-Implement one component at a time, in the order defined in `progress.md`.
+**Read `submodules.md` first.** It defines the exact build order for all submodules with input/output contracts and hard verification gates. Work through it strictly in order — **never start submodule N+1 until submodule N's gate is fully met.**
 
-### Step 1: Understand before coding
-- Re-read the paper section for this component.
+After each submodule gate passes:
+- Mark the submodule checkbox `✅` in `progress.md`
+
+### For each submodule:
+
+#### Step 1: Understand before coding
+- Re-read the paper section referenced in `submodules.md` for this submodule.
 - Update `notation_map.md` with any new notation: `paper symbol → code variable → meaning → value`.
 - If the paper has a multi-step algorithm, write every step as a numbered comment before coding any of them.
 - Check `failure_patterns.md` for relevant warnings.
-- Check the ambiguity register in `paper_contract.md` — any high-impact ambiguities for this component?
+- Check the ambiguity register in `paper_contract.md` — any high-impact ambiguities for this submodule?
 
-### Step 2: Implement minimally
-- Create `implementation/<component>.py`.
+#### Step 2: Implement minimally
+- Create the files listed in `submodules.md` for this submodule.
 - Parameterize all dimensions from a config dict — never hardcode spatial sizes, channel counts, sequence lengths, or vocabulary sizes.
+- Implement only what is needed for this submodule's gate. Do not pre-implement the next submodule.
 
-### Step 3: Verify (not just test)
+#### Step 3: Verify (not just test)
 
-Write `implementation/test_<component>.py`. The tests must prove correctness, not just executability:
+Write `implementation/test_<submodule>.py`. The tests must prove correctness, not just executability. Run every test listed in this submodule's **Verification gate** in `submodules.md`, plus:
 
 **Executability tests:**
-1. Shape assertions — verify every tensor shape matches paper contract.
+1. Shape assertions — verify every tensor shape matches paper contract and `submodules.md` spec.
 2. Dtype assertions — verify no silent type promotions.
 3. Forward + backward pass at debug config.
 
 **Correctness tests:**
 4. Equation oracle test — for at least one equation, hand-compute the expected output for a tiny input (2-3 elements) and assert the code produces the same result within tolerance.
-5. Tiny overfit test — can the component memorize 1-2 samples? If not, something fundamental is wrong.
+5. Tiny overfit test — can the submodule memorize 1-2 samples? If not, something fundamental is wrong.
 6. Output diversity — feed two different inputs, verify outputs differ (cosine similarity <0.95).
 7. Sign/direction test — where applicable, verify masks, schedules, or gradients have the correct sign/direction.
-8. Invariance/equivariance test — if the component should be invariant or equivariant to something (permutation, rotation, translation), test it.
+8. Invariance/equivariance test — if the submodule should be invariant or equivariant to something (permutation, rotation, translation), test it.
 
-Run: `uv run implementation/test_<component>.py`
+Run: `uv run implementation/test_<submodule>.py`
 
-### Step 4: Document proof
-After tests pass, update `proof.md` for this component:
+#### Step 4: Document proof
+After tests pass, update `proof.md` for this submodule:
 - What assumptions were made and why
 - What evidence confirms correctness (which tests pass, what they verify)
 - Any remaining uncertainty
 
-### Step 5: Decide
-- **PASS**: Verifier gate — re-read the component code as if you didn't write it. Try to find a bug. Check it against the paper equation line by line. If it survives, mark `✅` in `progress.md`, `git commit`.
-- **FAIL**: Debug (max 3 attempts). If stuck, mark `⚠️ BLOCKED` with notes and move on.
+#### Step 5: Gate check and commit
+- **PASS**: Verifier gate — re-read the submodule code as if you didn't write it. Try to find a bug. Check it against the paper equation line by line. Confirm every checkbox in this submodule's gate in `submodules.md` is met. Then:
+  - Mark `✅` in `progress.md`
+  - Only now, proceed to the next submodule in `submodules.md`.
+- **FAIL**: Debug (max 3 attempts). If stuck, mark `⚠️ BLOCKED` in `progress.md` with notes and the specific failing gate check. Do not skip to the next submodule — a blocked submodule means the one that depends on it cannot be built correctly.
 
 ---
 
@@ -138,7 +188,6 @@ After tests pass, update `proof.md` for this component:
 3. **10-step test** at smoke config: verify loss decreases. If loss is flat or increasing after 10 steps, do not proceed.
 4. **Tiny overfit test** at smoke config: train on 1-2 samples for many steps. The model should memorize them. If it can't overfit a trivial dataset, the learning pipeline is broken.
 5. **Reproducibility check**: run the 10-step test twice with the same seed. Results must match exactly. If they don't, there's non-determinism that will make experiments unreliable.
-6. **Commit**: `git add -A && git commit -m "phase 4: integration proof"`
 
 **Exit gate**: Loss decreases over 10 steps. Model can overfit 1-2 samples. Two identical runs produce identical results.
 
@@ -286,3 +335,12 @@ Every experiment is data. Never `git reset --hard`. Use `git revert` if you need
 
 ### 12. Training completed ≠ correct
 A run that finishes without crashing proves nothing about correctness. Verify outputs, check ablation deltas, test evaluation protocol, compare intermediate quantities.
+
+
+
+
+
+to the instruction set for the paper implementor,we added these specific tests: 1. Figure extractor from the paper. all the figures should be clipped and stored in a
+seperate folder called images. 2. Each figure should be accompanied by a text file which includes the caption for the figure, extract textual information in the    
+figure, and extracts pertaining text from the paper pertaining the figure- say architectural details, dimensions etc. 3. all equation listed should eb extracted    
+from the figure into a file called equations. 4. referenced test metrics should be extracted too.

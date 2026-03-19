@@ -8,6 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+*venv/
+env/
 worktrees/
 results/
 queue/
@@ -15,6 +17,9 @@ queue/
 # Agent prompt files (generated per-session by launchers)
 CLAUDE.md
 AGENTS.md
+.env
+.env.*
+!.env.example
 
 # Experimental code/artifacts
 dev/
@@ -24,12 +29,69 @@ dev/
 *.pth
 *.bin
 *.safetensors
+*.ckpt
 
 # Data directories
 datasets/
 Conversations/
-*.tsv
-active_dataset.txt
+
+# Large dataset directories
+paper/dataset/
+!paper/dataset/nuplan-v1.1/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Compressed archives
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Large media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# Lock files (large)
+uv.lock
+poetry.lock
+Pipfile.lock
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Compiled binaries
+*.so
+*.dll
+*.dylib
+*.a
+
+# Numpy compressed files
+*.npz
+
+# Active dataset marker
+active_dataset.txt
+path_to_nuplan_db

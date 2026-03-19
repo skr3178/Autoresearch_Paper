@@ -1,0 +1,31 @@
+## Caption
+Figure 1. Frameworks for multi-step trajectory generation.
+
+## Visual Content
+Three sub-figures comparing trajectory generation paradigms, shown as bird's-eye view road scenes with vehicles:
+
+(a) Initialization-refinement
+- A single trajectory (blue line) is generated, then refined iteratively (red dotted lines show refinement steps)
+- All refinement steps converge toward the same initial trajectory direction
+- One ego vehicle (green), multiple other vehicles (blue/grey)
+
+(b) Vanilla auto-regressive
+- At each step the ego vehicle generates multiple candidate trajectories (red dotted fan of lines)
+- Each step is conditioned only on the immediate previous state
+- Trajectories diverge — the fan of red lines grows wider over time, showing inconsistency across steps
+
+(c) Consistent auto-regressive (Ours)
+- A mode `c` (yellow background region) is selected first and held fixed across all steps
+- Each auto-regressive step uses the same mode as a query, constraining the trajectory fan
+- Red dotted lines remain consistent in direction across steps — much tighter spread than (b)
+- The yellow band represents the consistent mode constraining the planning region
+
+## Pertinent Paper Text
+Section I (Introduction): "Existing works... either initialize-then-refine, which is limited to unimodal planning, or use vanilla auto-regressive decoding, which leads to inconsistent multi-step plans. We propose consistent auto-regressive planning by conditioning each step on a latent mode variable c, ensuring temporal coherence across the full trajectory horizon."
+
+Section III-B: "The mode c is sampled once at s_0 and used as a consistent query across all T auto-regressive steps, preventing mode switching mid-trajectory."
+
+## Architectural Details
+- Three paradigms shown: (a) init-refine, (b) vanilla AR, (c) consistent AR
+- Key differentiator: mode variable `c` is fixed for the full horizon in (c)
+- Consistent AR is the proposed CarPlanner approach

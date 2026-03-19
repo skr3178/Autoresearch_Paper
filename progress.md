@@ -1,52 +1,48 @@
-# Implementation Progress
+# Progress Checklist
 
-<!-- The agent overwrites this file during Phase 1 with the actual component list. -->
-<!-- This is a template showing the expected format. -->
+## Component Checklist
 
-**Paper:** <!-- Title from requirements.md -->
-**Branch:** <!-- autoresearch/<tag> -->
-**Started:** <!-- date -->
+1. **Data Loader**
+   - Exit Criteria: Successfully loads and preprocesses data, matches expected shapes and types.
 
----
+2. **Transition Model**
+   - Exit Criteria: Pre-trained, outputs match expected future states.
 
-## Phase Status
+3. **Mode Selector**
+   - Exit Criteria: Correctly predicts trajectory modality, high accuracy on validation.
 
-| Phase | Status | Exit Gate Met? |
-|-------|--------|----------------|
-| 1. Paper Contract | pending | |
-| 2. Data Proof | pending | |
-| 3. Component Implementation | pending | |
-| 4. Integration Proof | pending | |
-| 5. Benchmarking | pending | |
-| 6. Improvement | pending | |
+4. **Auto-regressive Policy**
+   - Exit Criteria: Generates plausible trajectories, passes overfit test.
 
----
+5. **Consistency Module**
+   - Exit Criteria: Penalizes implausible transitions, improves trajectory coherence.
 
-## Components
+6. **Critic**
+   - Exit Criteria: Accurately estimates value function, aids in advantage computation.
 
-<!-- Agent fills this in after reading the paper. Ordered by dependency. -->
-<!-- Format: [ ] component_name — brief description — exit criteria -->
+7. **PPO Loop**
+   - Exit Criteria: Successfully orchestrates PPO updates, improves policy performance.
 
-- [ ] `data` — dataset loading and preprocessing — shapes match contract, loader <2s/10 batches
-- [ ] `model` — main architecture — equation oracle passes, can overfit 1-2 samples
-- [ ] `loss` — loss function(s) — coefficient mapping verified, all terms finite
-- [ ] `train` — training loop — loss decreases at smoke config
-- [ ] `eval` — metric computation — matches paper's evaluation protocol
+8. **Expert Refinement**
+   - Exit Criteria: Fine-tunes policy using expert demonstrations, improves performance.
 
----
+9. **Rule Selector**
+   - Exit Criteria: Selects best trajectory based on rule-based criteria.
 
-## Blockers
+## Exit Gate
 
-<!-- Components that failed after 3 attempts -->
-<!-- Format: ⚠️ component — what failed, what was tried, remaining uncertainty -->
+- Each component must meet its exit criteria before proceeding to the next.
+- **Debug Config**: Verify basic functionality and shape compliance.
+- **Smoke Config**: Ensure loss decreases and model trains without errors.
+- **Full Config**: Achieve performance metrics close to those reported in the paper.
 
-(none yet)
-
----
-
-## Checkpoint Compatibility
-
-<!-- Track which commits are checkpoint-compatible -->
-<!-- Format: commit_range — description -->
-
-(none yet)
+## Current Progress
+- [ ] Data Loader
+- [ ] Transition Model
+- [ ] Mode Selector
+- [ ] Auto-regressive Policy
+- [ ] Consistency Module
+- [ ] Critic
+- [ ] PPO Loop
+- [ ] Expert Refinement
+- [ ] Rule Selector

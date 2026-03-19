@@ -248,6 +248,47 @@ Failure modes specific to autonomous agents running without human oversight.
 
 ---
 
+## Category 7: Debugging Anti-Patterns
+
+### 7.1 Weakening Tests Instead of Fixing the Implementation
+**What happens**: A test fails. Instead of tracing the failure to its root cause in the implementation, the test assertion is changed or removed to make the test pass. The bug remains in the code.
+**Why it happens**: It's faster to fix the test than to understand the code. The agent sees the assertion line as the "thing that's failing" rather than evidence of a bug.
+**Prevention**: When a test fails, the test is correct until proven otherwise. The failure message is a symptom — trace it back to the implementation. Fix the implementation, not the test. Only change a test if you can prove the test itself was wrong (e.g. wrong expected shape from the paper contract).
+
+### 7.2 Rewriting Instead of Patching
+**What happens**: When a bug is found, the entire file is rewritten rather than patching the specific line. This introduces new bugs and loses previous correct logic.
+**Prevention**: When a test fails, read the traceback, find the exact line in the implementation that produced the wrong value, and change only that line. If rewriting more than 5 lines to fix a single test failure, stop — you are likely solving the wrong problem.
+
+### 7.3 Wrong Python Environment
+**What happens**: Using the wrong venv causes `ModuleNotFoundError` for either `torch` or `nuplan`. There are THREE venvs — each for a different purpose.
+**Prevention**: Two venvs exist — use the right one:
+- **Torch / CUDA / model training**: `/media/skr/storage/autoresearch/.venv/bin/python <script>`
+- **nuPlan data loading (imports nuplan.*)**: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python <script>`
+
+Never use `uv run python` — it has neither torch nor nuplan. Never attempt `pip install` for either — both are already installed in their respective venvs.
+
+### 7.4 Dimension Confusion in Reshape
+**What happens**: `reshape(-1, C, H, W)` is used when the input is a flat array for a single sample. The `-1` infers a size-1 leading dimension, producing shape `(1, C, H, W)` instead of `(C, H, W)`. Downstream, the batch dimension collides with this extra dim.
+**Prevention**: For a single sample from a byte buffer, use explicit shapes: `reshape(C, H, W)`. Only use `-1` when you know a batch dimension exists in the buffer.
+
+### 7.7 Mixing nuPlan and Torch in One Script
+**What happens**: The data loader imports both `nuplan.*` and `torch`. No single venv has both — the nuplan venv has no torch, the torch venv has no nuplan. The agent strips out one to make the other work, producing a broken data loader.
+**Prevention**: Split data loading into two stages:
+1. **Extraction script** `implementation/extract_nuplan.py` — runs with nuplan venv, reads `.db` files via nuplan API, saves scenarios as numpy `.npz` files to `implementation/cache/`
+2. **PyTorch Dataset** `implementation/data_loader.py` — runs with torch venv, reads `.npz` files, converts to tensors. No nuplan imports.
+Run extraction once: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python implementation/extract_nuplan.py`
+Then run training with: `/media/skr/storage/autoresearch/.venv/bin/python implementation/train.py`
+
+### 7.5 Querying nuPlan SQLite Directly
+**What happens**: The agent writes a raw `sqlite3` connection querying made-up tables like `scenarios` with columns `bev`, `ego_history`, `gt_trajectory`. These tables do not exist. nuPlan's schema uses `lidar_pc`, `ego_pose`, `scene`, `track`, etc. — and even those should not be queried directly.
+**Prevention**: Always use the nuPlan devkit API (`NuPlanScenario`, scenario builders) to load data. The devkit handles the schema. Never use `sqlite3` directly on nuPlan `.db` files. See `requirements.md` for the devkit path and usage.
+
+### 7.6 Hardcoding Placeholder Paths
+**What happens**: The agent writes a placeholder path like `/path/to/nuplan.db` in code instead of reading `requirements.md` for the actual dataset location. Tests then fail with `FileNotFoundError` or `sqlite3.OperationalError`.
+**Prevention**: Always read `requirements.md` before writing any file I/O code. The dataset paths are specified there. Use exactly those paths — never invent placeholders.
+
+---
+
 ## Pre-Training Checklist
 
 Before starting any training run, verify:

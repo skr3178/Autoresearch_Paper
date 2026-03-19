@@ -39,17 +39,29 @@ Agent reads this file as the primary specification.
 ## Dataset
 
 **Name:** nuPlan
-**Location:** To be downloaded (requires account at nuplan.org)
-**Format:** Database logs with ego pose, surrounding agents, traffic lights, and route information. 20Hz frequency. One sample = T20-frame trajectory (T timesteps) × (T + T actions (T + action_dim)
-**Preprocessing required:** Normalize coordinates, extract BE features
-** **Train / val split:** 
-- Train: Boston, Pittsburgh, Singapore, Las Vegas (or mini: 72 logs)
-- Val: Same cities (test set is also public)
-- Test: held out for competition
+**IMPORTANT: Dataset is already downloaded — do NOT attempt to download it. Use the paths below directly.**
 
-- Mini: 72 logs for quick prototyping
+**Local paths (absolute):**
+- SQLite logs (mini, ~8 files): `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-extracted/data/cache/mini/`
+- SQLite logs (train_boston, ~100 files): `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-extracted/data/cache/train_boston/`
+- Maps: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/maps/nuplan-maps-v1.0/`
+- nuPlan devkit: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/`
+- nuPlan devkit venv python: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python`
 
-**Notes:** Mini split has ~72 logs, much smaller than full train. Good for initial development and faster iteration.
+**How to load data:** Use the nuPlan devkit API — do NOT query SQLite directly. The nuPlan schema uses tables like `lidar_pc`, `ego_pose`, `scene`, `track` etc. Use `NuPlanScenario` and `NuPlanScenarioFilterUtils` from the devkit. Example:
+```python
+from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario import NuPlanScenario
+```
+
+**Train / val split:**
+- debug/smoke: use mini split (`mini/` directory)
+- full: use train_boston split (`train_boston/` directory)
+
+**Data loading architecture (two-stage — required):**
+- Stage 1 — Extraction: `implementation/extract_nuplan.py` uses nuplan venv to read `.db` files and write numpy `.npz` cache to `implementation/cache/`. Run with: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python implementation/extract_nuplan.py`
+- Stage 2 — Training dataset: `implementation/data_loader.py` uses torch venv to read `.npz` files and return tensors. No nuplan imports. Run with: `/media/skr/storage/autoresearch/.venv/bin/python`
+
+**Never import both nuplan and torch in the same script** — no single venv has both.
 ---
 ## Evaluation Metric
 **Metric name:** L1 (L2) and L2 (displacement error),**Direction:** Lower is better
