@@ -25,9 +25,11 @@ import argparse
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 from intelligence_config import IntelligenceConfig, load_repo_env
@@ -51,6 +53,146 @@ MIME_TYPES = {
 
 # Sentinel prefix used to identify image tool results in the message list
 _IMAGE_SENTINEL = "__IMAGE__:"
+
+# API retry settings
+API_RETRY_COUNT = 3
+API_RETRY_WAIT = 15  # seconds between retries on timeout
+
+# Max total chars across all messages before pruning old tool results
+MAX_HISTORY_CHARS = 20_000
+
+# Python code patterns that should not appear in reasoning text
+_CODE_CORRUPTION_RE = re.compile(
+    r'^\s*(def |class |import |from \w+ import|if |for |while |return )'
+    r'|torch\.\w+\(|nn\.\w+\(|\.cuda\(\)|\.to\(device',
+    re.MULTILINE,
+)
+
+
+def _is_corrupted(content: str | None) -> bool:
+    """Return True if agent reasoning text contains Python code fragments."""
+    if not content:
+        return False
+    return bool(_CODE_CORRUPTION_RE.search(content))
+
+
+def _get_newly_completed_submodules(old_text: str, new_text: str) -> list[str]:
+    """Return submodule display names that gained ✅ between old and new progress.md."""
+    def _extract(text: str) -> set[str]:
+        return set(re.findall(r'\*\*([^*]+)\*\*\s*✅', text))
+    return list(_extract(new_text) - _extract(old_text))
+
+
+def _has_figure_verification(proof_text: str, submodule_name: str) -> bool:
+    """Return True if proof.md contains a real figure verification for this submodule.
+
+    Minimum requirements:
+    1. A "Figure Verification" header exists in the submodule's section.
+    2. At least one figure classified as "architecture" or "results".
+
+    If any architecture figure is referenced for this submodule, ALSO require:
+    3. At least one forward mapping:  Figure N, component "..." → file.py:ClassName
+    4. At least one reverse mapping:  file.py:ClassName → Figure N, component "..."
+
+    If all relevant figures are classified as "results" (no architecture figures),
+    the submodule passes with just the header + classification — there is nothing
+    to compare against code.
+    """
+    n = submodule_name.lower()
+    name_variants = [
+        n,
+        n.replace(" ", "_"),
+        n.replace(" ", ""),
+        n.replace("_", " "),
+        n.replace("-", "").replace(" ", "_"),   # "Auto-regressive Policy" → "autoregressive_policy"
+        n.replace("-", "").replace(" ", ""),    # "Auto-regressive Policy" → "autoregressivepolicy"
+        n.replace("-", " "),                    # "auto-regressive" → "auto regressive"
+    ]
+    # Split into sections by "## "
+    sections = re.split(r'(?m)^## ', proof_text)
+    for section in sections:
+        first_line = section.split("\n", 1)[0].lower()
+        if any(v in first_line for v in name_variants):
+            # 1. Must have an explicit "Figure Verification" subsection
+            has_header = bool(re.search(r'figure\s+verification', section, re.IGNORECASE))
+            if not has_header:
+                return False
+
+            # 2. At least one figure classified as "architecture" or "results"
+            # Matches lines like: "figure2_page3.png: architecture (full diagram)"
+            has_classification = bool(re.search(
+                r':\s*(architecture|results)',
+                section,
+                re.IGNORECASE,
+            ))
+            if not has_classification:
+                return False
+
+            # Check if any architecture figure is referenced
+            has_architecture = bool(re.search(
+                r'architecture\s*(figure|→|:|—|-)',
+                section,
+                re.IGNORECASE,
+            ))
+
+            # If architecture figures exist, require bidirectional mapping
+            if has_architecture:
+                has_forward = bool(re.search(
+                    r'[Ff]igure\s*\d+.*→.*\.py',
+                    section,
+                ))
+                has_reverse = bool(re.search(
+                    r'\.py\s*:\s*\w+.*→.*[Ff]igure\s*\d+',
+                    section,
+                ))
+                return has_forward and has_reverse
+
+            # No architecture figures — results-only submodule passes with
+            # just the header + classification
+            return True
+    return False
+
+
+def _prune_history(messages: list[dict]) -> list[dict]:
+    """Drop oldest assistant+tool blocks when total history exceeds MAX_HISTORY_CHARS.
+
+    Always removes complete blocks (assistant message with tool_calls + all its
+    tool responses) to avoid orphaned tool_call_ids that cause API 400 errors.
+    """
+    def _size(m: dict) -> int:
+        c = m.get("content") or ""
+        return len(c) if isinstance(c, str) else sum(len(x.get("text", "")) for x in c if isinstance(x, dict))
+
+    if _size_total(messages) <= MAX_HISTORY_CHARS:
+        return messages
+
+    pruned = list(messages)
+    while _size_total(pruned) > MAX_HISTORY_CHARS and len(pruned) > 10:
+        # Find the oldest assistant message that has tool_calls
+        removed = False
+        for i, m in enumerate(pruned):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                # Collect all tool_call_ids from this message
+                ids = {tc["id"] for tc in m["tool_calls"]}
+                # Remove the assistant message
+                pruned.pop(i)
+                # Remove all corresponding tool response messages
+                pruned = [
+                    msg for msg in pruned
+                    if not (msg.get("role") == "tool" and msg.get("tool_call_id") in ids)
+                ]
+                removed = True
+                break
+        if not removed:
+            break  # nothing left to prune safely
+    return pruned
+
+
+def _size_total(messages: list[dict]) -> int:
+    def _size(m: dict) -> int:
+        c = m.get("content") or ""
+        return len(c) if isinstance(c, str) else sum(len(x.get("text", "")) for x in c if isinstance(x, dict))
+    return sum(_size(m) for m in messages)
 
 
 # ---------------------------------------------------------------------------
@@ -232,17 +374,24 @@ def tool_run_bash(command: str, timeout: int = 600) -> str:
 
 
 def execute_tool(name: str, args: dict) -> str:
-    if name == "read_file":
-        return tool_read_file(args["path"])
-    if name == "write_file":
-        return tool_write_file(args["path"], args["content"])
-    if name == "list_dir":
-        return tool_list_dir(args.get("path", ""))
-    if name == "read_image":
-        return tool_read_image(args["path"])
-    if name == "run_bash":
-        return tool_run_bash(args["command"], args.get("timeout", 600))
-    return f"ERROR: unknown tool {name!r}"
+    try:
+        if name == "read_file":
+            return tool_read_file(args["path"])
+        if name == "write_file":
+            if "content" not in args:
+                return "ERROR: write_file called without 'content' argument — your tool call was malformed (likely due to a truncated API response). Re-issue the write_file call with the full file content."
+            return tool_write_file(args["path"], args["content"])
+        if name == "list_dir":
+            return tool_list_dir(args.get("path", ""))
+        if name == "read_image":
+            return tool_read_image(args["path"])
+        if name == "run_bash":
+            if "command" not in args:
+                return "ERROR: run_bash called without 'command' argument — your tool call was malformed. Re-issue with the full command string."
+            return tool_run_bash(args["command"], args.get("timeout", 600))
+        return f"ERROR: unknown tool {name!r}"
+    except KeyError as e:
+        return f"ERROR: tool {name!r} missing required argument {e} — your tool call was malformed (likely truncated API response). Re-issue the tool call with all required arguments."
 
 
 def _make_tool_result_content(result: str) -> list | str:
@@ -271,10 +420,8 @@ def build_system_prompt(start_phase: int) -> str:
     failure_patterns = tool_read_file("failure_patterns.md")
     paper_contract = tool_read_file("paper_contract.md")
     submodules = tool_read_file("submodules.md")
-    equations = tool_read_file("paper/carplanner_equations.md")
-    algorithms = tool_read_file("paper/algorithms.md")
-    tables = tool_read_file("paper/tables.md")
-    hyperparameters = tool_read_file("paper/hyperparameters.md")
+    # equations, algorithms, tables, hyperparameters are NOT pre-loaded —
+    # the agent must actively read them via read_file/read_image as instructed in program.md Step 1.
 
     phase_note = ""
     if start_phase > 0:
@@ -284,6 +431,7 @@ def build_system_prompt(start_phase: int) -> str:
             Do NOT run any git commands (no git checkout, git add, git commit, git branch).
             Before doing anything in Phase {start_phase}, check which files already exist (use list_dir) and read progress.md to see what is already done. Skip any steps whose output files already exist and are non-empty. Only work on steps that are incomplete.
             If Phase {start_phase} is Phase 3: read progress.md, find the first submodule NOT marked ✅, and start writing code for that submodule immediately.
+            Do NOT stop after completing one submodule. After each submodule gate passes and progress.md is updated, immediately move to the next submodule. Only stop when ALL 9 submodules are marked ✅ in progress.md.
         """).strip()
 
     return textwrap.dedent(f"""
@@ -306,11 +454,13 @@ def build_system_prompt(start_phase: int) -> str:
 
         Working directory for run_bash is always: {REPO_ROOT}
 
-        ## Python environments — TWO venvs, use the correct one every time
-        - **Torch / CUDA / model training** (imports torch): `/media/skr/storage/autoresearch/.venv/bin/python <script>`
-        - **nuPlan data loading** (imports nuplan.*): `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python <script>`
+        ## Python environment — ONE venv for everything
+        Use this python for ALL scripts (data loading, training, testing):
+        `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python <script>`
 
-        Never use `uv run python` — it has neither torch nor nuplan. Never pip install either — they are already in their respective venvs above.
+        This venv has: torch 1.9.0+cu111, nuplan-devkit, numpy, CUDA support.
+        Never use `uv run python` or `/media/skr/storage/autoresearch/.venv/bin/python`.
+        Never pip install anything — all packages are already installed.
 
         {phase_note}
 
@@ -323,23 +473,20 @@ def build_system_prompt(start_phase: int) -> str:
         === FAILURE PATTERNS (read carefully to avoid known mistakes) ===
         {failure_patterns}
 
-        === CURRENT PAPER CONTRACT (may be empty if Phase 1 not started) ===
+        === CURRENT PAPER CONTRACT ===
         {paper_contract}
 
         === SUBMODULES (Phase 3 build order — read before writing any model code) ===
         {submodules}
 
-        === EQUATIONS (all numbered equations from the paper) ===
-        {equations}
-
-        === ALGORITHMS (formal pseudocode from supplementary material + reconstructed) ===
-        {algorithms}
-
-        === TABLES (all paper tables with full values) ===
-        {tables}
-
-        === HYPERPARAMETERS (all hyperparameters by module and training stage) ===
-        {hyperparameters}
+        ## Paper artifacts — read actively via tools, do NOT rely on memory
+        The following files are NOT pre-loaded. You MUST read them explicitly before each submodule:
+        - paper/carplanner_equations.md — all paper equations
+        - paper/algorithms.md — all pseudocode
+        - paper/hyperparameters.md — all hyperparameter values
+        - paper/tables.md — all tables
+        - paper/images/*.png — all figures (use read_image)
+        - paper/images/*.txt — figure annotations
 
         ---
         Begin now. Follow every phase and exit gate exactly as written in the program.
@@ -360,7 +507,7 @@ def chat(cfg: IntelligenceConfig, messages: list[dict], tools: list[dict]) -> di
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
-        "max_tokens": 16384,
+        "max_completion_tokens": 4096,
         "temperature": 0.3,
     }
     payload = json.dumps(body).encode()
@@ -375,13 +522,38 @@ def chat(cfg: IntelligenceConfig, messages: list[dict], tools: list[dict]) -> di
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {e.code} {e.reason}: {body}") from e
 
 
 # ---------------------------------------------------------------------------
 # Agent loop
 # ---------------------------------------------------------------------------
+
+def _get_paper_image_paths() -> set[str]:
+    """Return the set of normalised absolute paths for all paper images."""
+    img_dir = REPO_ROOT / "paper" / "images"
+    if not img_dir.exists():
+        return set()
+    return {str(p.resolve()) for p in img_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS}
+
+
+def _write_paper_context_sentinel(reads: set[str]) -> None:
+    """Write paper_context.md so the agent knows all figures have been loaded."""
+    names = sorted(Path(p).name for p in reads)
+    content = (
+        "# Paper Context\n\n"
+        "All paper figures have been read this session.\n"
+        "Do NOT call read_image again — the images are already loaded in your context.\n\n"
+        "Figures read:\n" + "\n".join(f"- {n}" for n in names) + "\n"
+    )
+    (REPO_ROOT / "paper_context.md").write_text(content, encoding="utf-8")
+    print(f"[runner] Auto-wrote paper_context.md after reading all {len(reads)} paper figures.")
+
 
 def run_agent(start_phase: int = 0, max_turns: int = 200, dry_run: bool = False) -> None:
     # Clear any shell-inherited API vars so .env always takes precedence
@@ -390,20 +562,6 @@ def run_agent(start_phase: int = 0, max_turns: int = 200, dry_run: bool = False)
         _os.environ.pop(_var, None)
 
     load_repo_env()
-
-    # Phase 0 needs vision — use VISION_* keys if available, else fall back to OPENAI_*
-    # Currently disabled: gpt-4o is used for all phases via OPENAI_* keys in .env
-    # Re-enable when switching to a coding-only model (e.g. glm-5) for phases 1+:
-    # if start_phase == 0:
-    #     vision_key = _os.environ.get("VISION_API_KEY")
-    #     vision_url = _os.environ.get("VISION_BASE_URL")
-    #     vision_model = _os.environ.get("VISION_MODEL")
-    #     if vision_key:
-    #         _os.environ["OPENAI_API_KEY"] = vision_key
-    #     if vision_url:
-    #         _os.environ["OPENAI_BASE_URL"] = vision_url
-    #     if vision_model:
-    #         _os.environ["AUTORESEARCH_INTELLIGENCE_MODEL"] = vision_model
 
     cfg = IntelligenceConfig.from_env()
 
@@ -418,36 +576,114 @@ def run_agent(start_phase: int = 0, max_turns: int = 200, dry_run: bool = False)
         print(system)
         return
 
+    # Remove session sentinel so agent re-reads paper artifacts on each fresh run
+    (REPO_ROOT / "paper_context.md").unlink(missing_ok=True)
+
+    # Session-level dedup cache for read_image.
+    # Key: normalised absolute path → base result string (already returned once).
+    # On re-reads we return a short stub to avoid flooding history with base64 blobs.
+    session_image_reads: dict[str, str] = {}
+    all_paper_images = _get_paper_image_paths()
+
+    # Session-level dedup cache for paper annotation .txt files.
+    # These are small but re-read every cycle after a gate block, bloating history.
+    # Key: normalised absolute path → True (already returned full content once).
+    session_txt_reads: set[str] = set()
+    _PAPER_IMAGES_DIR = str((REPO_ROOT / "paper" / "images").resolve())
+
+    # Snapshot of progress.md used by the hard gate to detect newly added ✅ marks
+    prev_progress = tool_read_file("progress.md")
+
     messages: list[dict] = [{"role": "user", "content": "Begin the implementation. Follow program.md phase by phase."}]
 
     for turn in range(max_turns):
         print(f"\n--- Turn {turn + 1}/{max_turns} ---")
 
-        try:
-            response = chat(cfg, [{"role": "system", "content": system}] + messages, TOOLS)
-        except Exception as e:
-            print(f"API error: {e}")
-            raise
+        # Prune history to avoid context bloat causing API timeouts
+        messages = _prune_history(messages)
+
+        # API call with retry on timeout
+        response = None
+        for attempt in range(API_RETRY_COUNT):
+            try:
+                response = chat(cfg, [{"role": "system", "content": system}] + messages, TOOLS)
+                break
+            except TimeoutError as e:
+                if attempt < API_RETRY_COUNT - 1:
+                    print(f"API timeout (attempt {attempt + 1}/{API_RETRY_COUNT}), retrying in {API_RETRY_WAIT}s...")
+                    time.sleep(API_RETRY_WAIT)
+                else:
+                    print(f"API error: {e}")
+                    raise
+            except Exception as e:
+                print(f"API error: {e}")
+                raise
 
         choice = response["choices"][0]
         msg = choice["message"]
         finish = choice.get("finish_reason", "")
 
+        # Detect output corruption (Python code in reasoning text)
+        content = msg.get("content") or ""
+        if _is_corrupted(content):
+            print(f"[runner] Output corruption detected — injecting recovery prompt")
+            msg_clean = dict(msg)
+            msg_clean["content"] = "[response contained code fragments and was truncated by runner]"
+            messages.append(msg_clean)
+            # If the corrupted message had tool_calls, add dummy responses so the
+            # message history stays valid (OpenAI requires every tool_call_id to
+            # have a corresponding tool response before the next user message)
+            for tc in msg_clean.get("tool_calls") or []:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": "[tool call skipped due to output corruption]",
+                })
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Your last response contained Python code fragments in the reasoning text outside any tool call. "
+                    "This causes context corruption. Recover now: in plain text only, state in ONE sentence what the "
+                    "current failing test is and what you will do next. Then make exactly one tool call."
+                ),
+            })
+            continue
+
         # Print assistant text if any
-        if msg.get("content"):
-            print(f"[agent] {msg['content'][:500]}")
+        if content:
+            print(f"[agent] {content[:500]}")
 
         messages.append(msg)
 
-        # If no tool calls, agent is done or stuck
+        # If no tool calls, check if phase is truly complete before stopping
         if not msg.get("tool_calls"):
-            if finish == "stop":
+            if finish == "stop" and start_phase == 3:
+                # Check progress.md — only stop if all Phase 3 submodules are ✅
+                progress = tool_read_file("progress.md")
+                if "Phase 3" in progress and progress.count("✅") >= progress.count("⬜") + progress.count("⏳") + progress.count("✅"):
+                    # Rough check: see if any submodule is NOT marked done
+                    import re as _re
+                    incomplete = _re.findall(r'⬜|⏳|IN PROGRESS|TODO', progress)
+                    if incomplete:
+                        print(f"[runner] Agent stopped early — {len(incomplete)} incomplete item(s) in progress.md. Injecting continuation prompt.")
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "You stopped but Phase 3 is not complete. "
+                                "Read progress.md, find the next submodule NOT marked ✅, and implement it now. "
+                                "Do not stop until ALL submodules in submodules.md are marked ✅."
+                            ),
+                        })
+                        continue
+                print("\n=== Agent finished ===")
+            elif finish == "stop":
                 print("\n=== Agent finished ===")
             else:
                 print(f"\n=== Agent stopped (finish_reason={finish!r}) ===")
             break
 
         # Execute tool calls
+        context_ready_injected = False
         for tc in msg["tool_calls"]:
             fn = tc["function"]["name"]
             try:
@@ -455,20 +691,150 @@ def run_agent(start_phase: int = 0, max_turns: int = 200, dry_run: bool = False)
             except json.JSONDecodeError:
                 args = {}
 
-            print(f"  TOOL {fn}({', '.join(f'{k}={str(v)[:60]!r}' for k, v in args.items())})")
-            result = execute_tool(fn, args)
+            # --- read_file dedup for paper annotation .txt files ---
+            # After a gate block, the agent re-reads all 6 annotation files every cycle,
+            # bloating history and causing pruning that wipes the gate message.
+            if fn == "read_file":
+                path_arg = args.get("path", "")
+                norm_txt = str(_resolve(path_arg))
+                is_annotation = (
+                    norm_txt.endswith(".txt")
+                    and norm_txt.startswith(_PAPER_IMAGES_DIR)
+                )
+                if is_annotation and norm_txt in session_txt_reads:
+                    result = (
+                        f"[Runner: annotation already read this session — stub returned. "
+                        f"Do NOT re-read paper annotation files. "
+                        f"Focus on writing the Figure Verification section to proof.md.]"
+                    )
+                    print(f"  TOOL {fn}({path_arg!r}) → [annotation cached — skipping re-read]")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": _make_tool_result_content(result),
+                    })
+                    continue
+                elif is_annotation:
+                    print(f"  TOOL {fn}({', '.join(f'{k}={str(v)[:60]!r}' for k, v in args.items())})")
+                    result = execute_tool(fn, args)
+                    session_txt_reads.add(norm_txt)
+                    preview = result[:200].replace("\n", " ")
+                    print(f"       → {preview}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": _make_tool_result_content(result),
+                    })
+                    continue
 
-            # Images get a short preview; text results get first 200 chars
-            if result.startswith(_IMAGE_SENTINEL):
-                print(f"       → [image: {args.get('path', '?')}]")
+            # --- read_image dedup ---
+            # Images are large base64 blobs. Re-reading them fills the history,
+            # triggers pruning, which erases the read evidence, causing infinite loops.
+            # Solution: cache first read; return a short stub on subsequent calls.
+            if fn == "read_image":
+                norm = str(_resolve(args.get("path", "")))
+                if norm in session_image_reads:
+                    result = (
+                        "[Runner: image already loaded this session — returning cached stub to preserve context. "
+                        "Do NOT call read_image for this file again. "
+                        "paper_context.md lists all figures read so far.]"
+                    )
+                    print(f"  TOOL {fn}({args.get('path', '')!r}) → [cached — skipping re-read]")
+                else:
+                    print(f"  TOOL {fn}({', '.join(f'{k}={str(v)[:60]!r}' for k, v in args.items())})")
+                    result = execute_tool(fn, args)
+                    session_image_reads[norm] = "read"
+                    print(f"       → [image: {args.get('path', '?')}]")
+                    # After reading all paper images for the first time, auto-write sentinel
+                    if (not (REPO_ROOT / "paper_context.md").exists()
+                            and all_paper_images
+                            and all_paper_images.issubset(session_image_reads.keys())):
+                        _write_paper_context_sentinel(set(session_image_reads.keys()))
+                        context_ready_injected = True
             else:
-                preview = result[:200].replace("\n", " ")
-                print(f"       → {preview}")
+                print(f"  TOOL {fn}({', '.join(f'{k}={str(v)[:60]!r}' for k, v in args.items())})")
+                result = execute_tool(fn, args)
+                # Images get a short preview; text results get first 200 chars
+                if result.startswith(_IMAGE_SENTINEL):
+                    print(f"       → [image: {args.get('path', '?')}]")
+                else:
+                    preview = result[:200].replace("\n", " ")
+                    print(f"       → {preview}")
 
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
                 "content": _make_tool_result_content(result),
+            })
+
+        # --- Hard gate: figure verification must exist before ✅ ---
+        # Check if any write_file call this turn targeted progress.md
+        progress_written_this_turn = any(
+            tc["function"]["name"] == "write_file"
+            and "progress" in json.loads(tc["function"].get("arguments", "{}")).get("path", "")
+            for tc in msg["tool_calls"]
+        )
+        if progress_written_this_turn:
+            new_progress = tool_read_file("progress.md")
+            newly_done = _get_newly_completed_submodules(prev_progress, new_progress)
+            gate_failures = []
+            images_not_read = not session_image_reads  # no images read at all this session
+            if newly_done:
+                if images_not_read:
+                    # Agent hasn't read any figures this session — can't have done verification
+                    gate_failures = list(newly_done)
+                else:
+                    proof_text = tool_read_file("proof.md")
+                    for name in newly_done:
+                        if not _has_figure_verification(proof_text, name):
+                            gate_failures.append(name)
+            if gate_failures:
+                # Revert progress.md — the agent has not earned these ✅ marks
+                tool_write_file("progress.md", prev_progress)
+                failed = ", ".join(f'"{n}"' for n in gate_failures)
+                reason = (
+                    "you have NOT called read_image on any paper figures this session"
+                    if images_not_read else
+                    "proof.md is missing the required Figure Verification section with bidirectional mapping"
+                )
+                print(f"[runner] HARD GATE blocked ✅ for: {failed} — {reason}. Reverting progress.md.")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"[Runner] HARD GATE BLOCKED: You marked {failed} as ✅ in progress.md "
+                        f"but {reason}. progress.md has been reverted.\n\n"
+                        f"⚠️ DO NOT modify any .py files. DO NOT re-read paper figures or annotations — "
+                        f"you have already read them. DO NOT read progress.md, paper_context.md, or "
+                        f"annotation .txt files again.\n\n"
+                        f"ACTION REQUIRED — do this NOW in one step:\n"
+                        f"Open proof.md, find the section for each blocked submodule, "
+                        f"and append a '### Figure Verification' block in this EXACT format:\n\n"
+                        f"### Figure Verification\n"
+                        f"**Figure classification**\n"
+                        f"- figureN_pageX.png: architecture (brief reason)\n"
+                        f"- figureM_pageY.png: results (brief reason)\n\n"
+                        f"**Forward mapping (figure → code)**\n"
+                        f"- Figure N, component \"ComponentName\" → implementation/file.py:ClassName\n\n"
+                        f"**Reverse mapping (code → figure)**\n"
+                        f"- implementation/file.py:ClassName → Figure N, component \"ComponentName\"\n\n"
+                        f"Write this section based on what you already know from the figures and code. "
+                        f"Then re-run tests and update progress.md."
+                    ),
+                })
+            else:
+                prev_progress = new_progress  # gate passed — advance snapshot
+
+        # After all paper images have been read for the first time, inject a prompt
+        # so the agent knows to stop reading and start writing code.
+        if context_ready_injected:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "[Runner] All paper figures have been loaded into context. "
+                    "paper_context.md has been written — you do NOT need to call read_image again. "
+                    "Stop reading paper artifacts. Write paper_context.md to confirm, then immediately "
+                    "start writing implementation code for the next incomplete submodule."
+                ),
             })
 
     else:

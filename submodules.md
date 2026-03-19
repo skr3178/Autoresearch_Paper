@@ -3,8 +3,7 @@
 Implement submodules in strict order. **Never start submodule N+1 until submodule N's gate is fully met.**
 
 After each submodule gate passes:
-1. `git commit -m "submodule N: <name> verified"`
-2. Mark the checkbox `✅` in `progress.md`
+1. Mark the checkbox `✅` in `progress.md`
 
 ---
 

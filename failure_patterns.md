@@ -260,24 +260,14 @@ Failure modes specific to autonomous agents running without human oversight.
 **Prevention**: When a test fails, read the traceback, find the exact line in the implementation that produced the wrong value, and change only that line. If rewriting more than 5 lines to fix a single test failure, stop — you are likely solving the wrong problem.
 
 ### 7.3 Wrong Python Environment
-**What happens**: Using the wrong venv causes `ModuleNotFoundError` for either `torch` or `nuplan`. There are THREE venvs — each for a different purpose.
-**Prevention**: Two venvs exist — use the right one:
-- **Torch / CUDA / model training**: `/media/skr/storage/autoresearch/.venv/bin/python <script>`
-- **nuPlan data loading (imports nuplan.*)**: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python <script>`
-
-Never use `uv run python` — it has neither torch nor nuplan. Never attempt `pip install` for either — both are already installed in their respective venvs.
+**What happens**: Using `uv run python` or `/media/skr/storage/autoresearch/.venv/bin/python` causes `ModuleNotFoundError` for `torch` or `nuplan`.
+**Prevention**: ONE venv for everything:
+`/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python <script>`
+This has torch 1.9.0+cu111, nuplan-devkit, numpy, CUDA. Use it for all scripts. Never use `uv run python`. Never pip install anything.
 
 ### 7.4 Dimension Confusion in Reshape
 **What happens**: `reshape(-1, C, H, W)` is used when the input is a flat array for a single sample. The `-1` infers a size-1 leading dimension, producing shape `(1, C, H, W)` instead of `(C, H, W)`. Downstream, the batch dimension collides with this extra dim.
 **Prevention**: For a single sample from a byte buffer, use explicit shapes: `reshape(C, H, W)`. Only use `-1` when you know a batch dimension exists in the buffer.
-
-### 7.7 Mixing nuPlan and Torch in One Script
-**What happens**: The data loader imports both `nuplan.*` and `torch`. No single venv has both — the nuplan venv has no torch, the torch venv has no nuplan. The agent strips out one to make the other work, producing a broken data loader.
-**Prevention**: Split data loading into two stages:
-1. **Extraction script** `implementation/extract_nuplan.py` — runs with nuplan venv, reads `.db` files via nuplan API, saves scenarios as numpy `.npz` files to `implementation/cache/`
-2. **PyTorch Dataset** `implementation/data_loader.py` — runs with torch venv, reads `.npz` files, converts to tensors. No nuplan imports.
-Run extraction once: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python implementation/extract_nuplan.py`
-Then run training with: `/media/skr/storage/autoresearch/.venv/bin/python implementation/train.py`
 
 ### 7.5 Querying nuPlan SQLite Directly
 **What happens**: The agent writes a raw `sqlite3` connection querying made-up tables like `scenarios` with columns `bev`, `ego_history`, `gt_trajectory`. These tables do not exist. nuPlan's schema uses `lidar_pc`, `ego_pose`, `scene`, `track`, etc. — and even those should not be queried directly.
@@ -286,6 +276,65 @@ Then run training with: `/media/skr/storage/autoresearch/.venv/bin/python implem
 ### 7.6 Hardcoding Placeholder Paths
 **What happens**: The agent writes a placeholder path like `/path/to/nuplan.db` in code instead of reading `requirements.md` for the actual dataset location. Tests then fail with `FileNotFoundError` or `sqlite3.OperationalError`.
 **Prevention**: Always read `requirements.md` before writing any file I/O code. The dataset paths are specified there. Use exactly those paths — never invent placeholders.
+
+### 7.8 Guessing API Signatures Instead of Reading Source
+**What happens**: When using an unfamiliar library (e.g. nuPlan devkit), the agent guesses at class names, function signatures, and parameter names. Each guess fails, consuming a turn. After 10-15 turns of trial-and-error, max turns is hit with no progress.
+**Prevention**: Before writing ANY code that uses the nuPlan devkit, use `read_file` to read the relevant source files in `paper/dataset/nuplan-devkit/nuplan/`. Use `run_bash` with `grep -r 'class X\|def Y'` to find the right imports and signatures. Spend 2-3 turns reading source code upfront to save 15 turns of debugging.
+
+### 7.9 Rewriting Instead of Isolating on Repeated Gate Failures
+**What happens**: A test gate fails. The agent rewrites the test file (or the entire model file) on each retry without understanding WHY it failed. After 5-8 rewrites the code is worse, the context is polluted, and the same assertion is still failing.
+**Why it happens**: Rewriting feels like progress. The agent mistakes "wrote new code" for "made progress."
+**Prevention**: If the same gate fails 3 consecutive times, STOP rewriting. Instead:
+1. Read the full test output — find the exact assertion that failed and the exact values
+2. Write a minimal `debug_<component>.py` (20-30 lines) that reproduces ONLY that failing assertion
+3. Run the debug script, read the output, identify the specific wrong value
+4. Fix ONLY that line in the implementation
+5. Never rewrite more than 5 lines to fix a single test failure
+
+### 7.10 Catastrophic Forgetting in Overfit Tests
+**What happens**: Overfit test alternates between N samples (sample 1 on even steps, sample 2 on odd steps). Model memorizes the last-trained sample but forgets the others. Test reports failure even though the model architecture is correct.
+**Signature**: One sample's final loss is near 0, others remain at initial loss level.
+**Why it's a test design bug, not a model bug**: The model is working — it just can't memorize multiple patterns when they're trained sequentially with shared weights.
+**Prevention**: In all overfit tests, train ALL samples jointly in every step — sum their losses in a single backward pass. Never alternate samples in a memorization test.
+```python
+# WRONG — alternating causes forgetting:
+if step % 2 == 0:
+    loss = criterion(model(x1), y1)
+else:
+    loss = criterion(model(x2), y2)
+
+# CORRECT — joint training:
+loss = criterion(model(x1), y1) + criterion(model(x2), y2)
+```
+
+### 7.11 Bash Command Errors Misread as Code Bugs
+**What happens**: `run_bash` returns `exit_code=126` ("Permission denied") or `exit_code=2` ("Syntax error: redirection unexpected"). Agent interprets this as a bug in the script being run and starts modifying the script.
+**Why it happens**: These errors come from the shell, not the script. The command string was truncated mid-path or contained shell metacharacters (`>`, `>>`, `|`, `$`) that were mangled.
+**Prevention**:
+- `exit_code=126` + "Permission denied" → the command path was truncated. Retry with a shorter absolute-path command.
+- `exit_code=2` + "Syntax error: redirection unexpected" → the command had shell metacharacters that were escaped or dropped. Avoid `>` and `|` in the same command as `cd`. Split into separate tool calls if needed.
+- Do NOT modify the script file in response to these errors. They are runner/shell errors, not script errors.
+
+### 7.12 Output Corruption Recovery
+**What happens**: GLM-5 emits Python code fragments, variable names, or partial function bodies inside reasoning text (outside any tool call). This corrupts the conversation context. The next API call sends a very long garbled message, causing a 300s timeout and runner crash.
+**Signature**: Agent reasoning contains lines like `conditioned_features = model.film(...)` or `if step % 2 == 0:` that are not inside a tool call.
+**Prevention (agent-side)**: If you notice code appearing in your own reasoning text, immediately stop. On the very next turn output ONLY:
+```
+State: [one sentence describing current file state]
+Next action: [one tool call]
+```
+Nothing else. Do not attempt to continue the corrupted reasoning thread.
+
+### 7.13 Rewriting Working Code After a Hard Gate Block
+**What happens**: The runner's hard gate blocks a ✅ mark because proof.md is missing figure verification. The agent interprets "fix discrepancies" as "rewrite the implementation code," breaking tests that were previously passing.
+**Signature**: After a `[Runner] HARD GATE BLOCKED` message, the agent starts writing new content to `.py` implementation files and test failures appear that did not exist before.
+**Why it happens**: The gate message mentions "⚠️ NOT FOUND" entries, which the agent reads as "code is missing" rather than "proof.md documentation is missing."
+**Prevention**: When you see `[Runner] HARD GATE BLOCKED`:
+- The existing implementation code is CORRECT. Do NOT touch any `.py` files.
+- The only file you need to update is `proof.md`.
+- Read the existing implementation files to understand what is there, then write the Figure Verification section in proof.md documenting what you find.
+- Re-run the tests only to confirm they still pass — not to fix anything.
+- A "⚠️ NOT FOUND" entry means a figure component has no matching code; resolve it by either finding the existing code you missed, or (only if truly absent) adding the missing piece to the implementation file. Never rewrite working code.
 
 ---
 

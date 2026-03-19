@@ -57,11 +57,10 @@ from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario import NuPlanSce
 - debug/smoke: use mini split (`mini/` directory)
 - full: use train_boston split (`train_boston/` directory)
 
-**Data loading architecture (two-stage — required):**
-- Stage 1 — Extraction: `implementation/extract_nuplan.py` uses nuplan venv to read `.db` files and write numpy `.npz` cache to `implementation/cache/`. Run with: `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python implementation/extract_nuplan.py`
-- Stage 2 — Training dataset: `implementation/data_loader.py` uses torch venv to read `.npz` files and return tensors. No nuplan imports. Run with: `/media/skr/storage/autoresearch/.venv/bin/python`
-
-**Never import both nuplan and torch in the same script** — no single venv has both.
+**Python environment for ALL scripts** (data loading, training, testing):
+`/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python`
+This venv has torch 1.9.0+cu111, nuplan-devkit, numpy, and CUDA support. Use it for everything.
+Never use `uv run python`. Never pip install anything.
 ---
 ## Evaluation Metric
 **Metric name:** L1 (L2) and L2 (displacement error),**Direction:** Lower is better

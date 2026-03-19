@@ -122,7 +122,13 @@ Define configs for different scales:
 6. **Profile the loader**: load 10 batches at batch_size=2, time it. If >2 seconds, vectorize before proceeding.
 7. **Write `data_report.md`** documenting all findings: sample structure, shapes, dtype, value ranges, split sizes, loader throughput, any discrepancies from the paper.
 
-**Exit gate**: `data_report.md` written. Data shapes, types, and splits verified against paper contract.
+**Exit gate** — ALL of the following must pass before moving to Phase 3:
+1. `implementation/data_proof.py` runs to completion with exit_code=0 (no exceptions, full output printed)
+2. `implementation/data_loader.py` loads at least one batch without error — run: `python implementation/data_loader.py` and verify exit_code=0
+3. `data_report.md` exists and contains actual printed values: scenario count, ego state shapes/dtypes, tracked object count, loader throughput in seconds
+4. The shapes and dtypes in `data_report.md` match what `paper_contract.md` specifies
+
+Do not declare Phase 2 complete until you have run both scripts and confirmed exit_code=0 for each.
 
 ---
 
@@ -135,12 +141,28 @@ After each submodule gate passes:
 
 ### For each submodule:
 
-#### Step 1: Understand before coding
-- Re-read the paper section referenced in `submodules.md` for this submodule.
-- Update `notation_map.md` with any new notation: `paper symbol → code variable → meaning → value`.
-- If the paper has a multi-step algorithm, write every step as a numbered comment before coding any of them.
-- Check `failure_patterns.md` for relevant warnings.
-- Check the ambiguity register in `paper_contract.md` — any high-impact ambiguities for this submodule?
+#### Step 1: Understand before coding — MANDATORY paper artifact reading (ONCE per session)
+
+**Check first**: Does `paper_context.md` exist? If yes, skip to Step 2 — all paper artifacts are already loaded for this session.
+
+If `paper_context.md` does NOT exist, read ALL of the following exactly once:
+
+1. **Equations**: `read_file("paper/carplanner_equations.md")`
+2. **Algorithms**: `read_file("paper/algorithms.md")`
+3. **Hyperparameters**: `read_file("paper/hyperparameters.md")`
+4. **Tables**: `read_file("paper/tables.md")`
+5. **Paper contract**: `read_file("paper_contract.md")`
+6. **Failure patterns**: `read_file("failure_patterns.md")`
+7. **ALL paper figures**: for every `.png` in `paper/images/`, call `read_image`. Also read each companion `.txt`.
+
+After reading all of the above, write `paper_context.md` with this exact content:
+```
+# Paper Context
+status: loaded
+figures: <comma-separated list of figure filenames you read>
+```
+
+This file is your signal that paper artifacts are loaded. Never re-read paper artifacts in the same session if this file exists.
 
 #### Step 2: Implement minimally
 - Create the files listed in `submodules.md` for this submodule.
@@ -171,11 +193,36 @@ After tests pass, update `proof.md` for this submodule:
 - What evidence confirms correctness (which tests pass, what they verify)
 - Any remaining uncertainty
 
-#### Step 5: Gate check and commit
-- **PASS**: Verifier gate — re-read the submodule code as if you didn't write it. Try to find a bug. Check it against the paper equation line by line. Confirm every checkbox in this submodule's gate in `submodules.md` is met. Then:
+#### Step 5: Figure verification — MANDATORY before marking ✅
+
+Before marking any submodule complete, you MUST do a visual architecture verification:
+
+1. Use `list_dir("paper/images")` to see all available figures and annotation files.
+2. Call `read_image` on every figure in `paper/images/`. Also read every companion `.txt` annotation file.
+3. **Classify each figure** independently before doing anything else:
+   - **Architecture figure**: shows components, blocks, data flow arrows, module connections, or algorithm steps → must be compared against code
+   - **Results figure**: shows metric numbers, performance tables, training curves, qualitative trajectory plots, or ablation results → cannot be verified without a trained model; note it in `proof.md` as an evaluation target for a later phase and skip code comparison
+   Only architecture figures proceed to the mapping step below.
+4. **Build an explicit figure-to-code mapping** for this submodule using only architecture figures. For every visual component in those figures (blocks, arrows, modules, data flows), write a mapping entry:
+   ```
+   Figure N, component "<name>" → <file.py>:<ClassName or function> (or ⚠️ NOT FOUND)
+   ```
+   Then for every class/function in the implementation, write:
+   ```
+   <file.py>:<ClassName> → Figure N, component "<name>" (or ⚠️ NO FIGURE ANCHOR)
+   ```
+5. Save this mapping to `proof.md` under this submodule's section.
+6. For every `⚠️ NOT FOUND` entry — a figure component with no code: implement it.
+7. For every `⚠️ NO FIGURE ANCHOR` entry — code with no figure: verify it is justified by an equation or algorithm, or remove it if it is an invention not grounded in the paper.
+8. Fix all discrepancies, re-run tests, verify they still pass.
+
+Only after completing this mapping and resolving all `⚠️` entries may you mark `✅` in `progress.md`.
+
+#### Step 6: Gate check
+- **PASS**: All code tests pass AND figure verification is complete and documented in `proof.md`. Then:
   - Mark `✅` in `progress.md`
   - Only now, proceed to the next submodule in `submodules.md`.
-- **FAIL**: Debug (max 3 attempts). If stuck, mark `⚠️ BLOCKED` in `progress.md` with notes and the specific failing gate check. Do not skip to the next submodule — a blocked submodule means the one that depends on it cannot be built correctly.
+- **FAIL**: Debug (max 3 attempts). If stuck, mark `⚠️ BLOCKED` in `progress.md` with notes and the specific failing gate check. Do not skip to the next submodule.
 
 ---
 
