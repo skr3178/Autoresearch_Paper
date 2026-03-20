@@ -95,3 +95,6 @@ temp/
 # Active dataset marker
 active_dataset.txt
 path_to_nuplan_db
+
+# Session state files (survive restarts but not for git)
+.session_*.json

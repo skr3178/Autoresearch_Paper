@@ -43,6 +43,15 @@ from intelligence_config import IntelligenceConfig, load_repo_env
 
 REPO_ROOT = Path(__file__).resolve().parent
 MAX_FILE_BYTES = 32_000   # truncate large files to keep context manageable
+
+# Load paper manifest — all paper-specific paths come from here, not hardcoded.
+_manifest_path = REPO_ROOT / "paper_manifest.json"
+if _manifest_path.exists():
+    _MANIFEST = json.loads(_manifest_path.read_text())
+else:
+    raise FileNotFoundError("paper_manifest.json not found — create it before running the agent.")
+_PDF_PATH = REPO_ROOT / _MANIFEST["pdf"]
+_PAPER_EXTRACT_FILENAMES = [REPO_ROOT / f for f in _MANIFEST["extract_files"]]
 MAX_BASH_BYTES = 16_000   # truncate large command output
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
@@ -64,6 +73,12 @@ API_RETRY_WAIT = 15  # seconds between retries on timeout
 # Max total chars across all messages before pruning old tool results
 MAX_HISTORY_CHARS = 20_000
 
+# Session state files for persisting reads across crashes/restarts
+_SESSION_IMAGES_FILE = REPO_ROOT / ".session_images.json"
+
+# Session state file for persisting image reads across crashes/restarts
+_SESSION_IMAGES_FILE = REPO_ROOT / ".session_images.json"
+
 # Python code patterns that should not appear in reasoning text
 _CODE_CORRUPTION_RE = re.compile(
     r'^\s*(def |class |import |from \w+ import|if |for |while |return )'
@@ -80,9 +95,26 @@ def _is_corrupted(content: str | None) -> bool:
 
 
 def _get_newly_completed_submodules(old_text: str, new_text: str) -> list[str]:
-    """Return submodule display names that gained ✅ between old and new progress.md."""
+    """Return submodule display names that gained ✅ between old and new progress.md.
+
+    Matches checkbox format (one line only):
+        - [x] Submodule 1: data_loader ✅
+    and bold format (one line only):
+        **data_loader** ✅
+
+    Single-line anchoring via re.MULTILINE + [^\n✅]+ prevents cross-line false matches
+    (e.g. a ✅ on the line *after* a submodule name must not trigger detection).
+    """
     def _extract(text: str) -> set[str]:
-        return set(re.findall(r'\*\*([^*]+)\*\*\s*✅', text))
+        # Checkbox format — anchored to one line: - [x] Submodule N: name ✅
+        # [^\n✅]+ prevents the capture from spanning newlines or swallowing the ✅
+        checkbox = set(re.findall(
+            r'^-\s*\[x\]\s*Submodule\s*\d+:\s*([^\n✅]+?)\s*✅',
+            text, re.MULTILINE | re.IGNORECASE,
+        ))
+        # Bold format — anchored to one line: **name** ✅
+        bold = set(re.findall(r'\*\*([^*\n]+)\*\*\s*✅', text))
+        return {name.strip() for name in checkbox | bold}
     return list(_extract(new_text) - _extract(old_text))
 
 
@@ -131,9 +163,10 @@ def _has_figure_verification(proof_text: str, submodule_name: str) -> bool:
             if not has_classification:
                 return False
 
-            # Check if any architecture figure is referenced
+            # Check if any figure is classified as architecture.
+            # Matches classification lines: "figureN.png: architecture (...)"
             has_architecture = bool(re.search(
-                r'architecture\s*(figure|→|:|—|-)',
+                r':\s*architecture',
                 section,
                 re.IGNORECASE,
             ))
@@ -196,6 +229,25 @@ def _size_total(messages: list[dict]) -> int:
         c = m.get("content") or ""
         return len(c) if isinstance(c, str) else sum(len(x.get("text", "")) for x in c if isinstance(x, dict))
     return sum(_size(m) for m in messages)
+
+
+def _load_session_images() -> set[str]:
+    """Load persisted image reads from disk. Survives crashes/restarts."""
+    try:
+        if _SESSION_IMAGES_FILE.exists():
+            data = json.loads(_SESSION_IMAGES_FILE.read_text())
+            return set(data.get("images_read", []))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_session_images(images_read: set[str]) -> None:
+    """Persist image reads to disk so they survive crashes/restarts."""
+    try:
+        _SESSION_IMAGES_FILE.write_text(json.dumps({"images_read": list(images_read)}))
+    except Exception:
+        pass  # Non-critical; don't crash the agent if this fails
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +341,7 @@ TOOLS = [
         "function": {
             "name": "query_pdf",
             "description": (
-                "Query the paper PDF (CarPlanner.pdf) with a specific question. "
+                f"Query the paper PDF ({_PDF_PATH.name}) with a specific question. "
                 "The PDF is uploaded once at first call and cached for the entire session — "
                 "no repeated uploads or token waste. Use this for any question about the paper "
                 "that requires reading the original PDF (equations, figures, sections, hyperparameters). "
@@ -320,7 +372,15 @@ TOOLS = [
 # ---------------------------------------------------------------------------
 
 def _upload_pdf(pdf_path: Path, api_key: str) -> str:
-    """Upload PDF to OpenAI Files API once, return file_id."""
+    """Upload PDF to OpenAI Files API once, return file_id.
+
+    NOTE: This function is OpenAI-specific — it uses the OpenAI Files API and
+    Responses API (/v1/responses with input_file), which are not part of the
+    standard OpenAI-compatible chat API. The chat provider (cfg.base_url) and
+    the PDF provider (api.openai.com) are intentionally separate: chat can run
+    on any compatible provider, but PDF grounding requires OpenAI directly.
+    The api_key used here must be a valid OpenAI key regardless of chat provider.
+    """
     boundary = "----FormBoundary" + os.urandom(8).hex()
     pdf_bytes = pdf_path.read_bytes()
     filename = pdf_path.name
@@ -370,7 +430,14 @@ def _query_pdf(file_id: str, question: str, api_key: str, model: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read())
-        return result.get("output_text", str(result))
+        # Extract text from nested Responses API structure:
+        # result["output"] is a list; the message item has content[0]["text"]
+        for item in result.get("output", []):
+            if item.get("type") == "message":
+                for block in item.get("content", []):
+                    if block.get("type") == "output_text" and block.get("text"):
+                        return block["text"]
+        return f"ERROR: no text in response — raw: {str(result)[:300]}"
     except urllib.error.HTTPError as e:
         return f"ERROR querying PDF: {e.code} {e.read().decode()[:500]}"
 
@@ -518,8 +585,8 @@ def build_system_prompt(start_phase: float) -> str:
     requirements = tool_read_file("requirements.md")
     failure_patterns = tool_read_file("failure_patterns.md")
     phase0_report = tool_read_file("phase0_report.md")
-    phase1_brief = tool_read_file("phase1_brief.md")
-    submodules = tool_read_file("submodules.md")
+    phase1_brief = tool_read_file("phase1_brief.md") if start_phase >= 2 else ""
+    submodules = tool_read_file("submodules.md") if start_phase >= 3 else ""
     # equations, algorithms, tables, hyperparameters are NOT pre-loaded —
     # the agent must actively read them via read_file/read_image as instructed in program.md Step 1.
 
@@ -541,13 +608,25 @@ def build_system_prompt(start_phase: float) -> str:
                 Then follow Phase 4.5 in program.md exactly: produce inconsistency_report.md, prioritize fixes, and run the cross-phase fix loop.
                 You ARE permitted to edit files in implementation/ if the audit identifies upstream bugs — but only after writing a diagnosis in inconsistency_report.md first.
             """).strip()
+        elif start_phase == 1:
+            phase_note = textwrap.dedent("""
+                **RESUME NOTE**: Phase 0 is complete. Your ONLY task is Phase 1: Paper Understanding.
+                Do NOT write any implementation code. Do NOT create files in implementation/. Do NOT use submodules.md.
+                Do NOT run any git commands.
+                Your two deliverables for Phase 1 are:
+                  1. Write `phase1_brief.md` — your paper understanding checkpoint (equations, figures, algorithms cited by number)
+                  2. Write `phase1_report.md` — the full contract: dataset, architecture, training, evaluation, ambiguity register
+                Read the Phase 0 artifacts first (paper/carplanner_equations.md, paper/algorithms.md, paper/hyperparameters.md, paper/tables.md, all figures in paper/images/).
+                Then write phase1_brief.md, then write phase1_report.md, then update progress.md to mark Phase 1 ✅ COMPLETE.
+                Stop after Phase 1 is complete. Do not proceed to Phase 2.
+            """).strip()
         else:
             phase_note = textwrap.dedent(f"""
                 **RESUME NOTE**: Phases 0–{int(start_phase) - 1} are already complete. Jump directly to Phase {start_phase}.
                 Do NOT re-read or re-verify earlier phases. Do NOT explore the repo structure.
                 Do NOT run any git commands (no git checkout, git add, git commit, git branch).
                 Before doing anything in Phase {start_phase}, check which files already exist (use list_dir) and read progress.md to see what is already done. Skip any steps whose output files already exist and are non-empty. Only work on steps that are incomplete.
-                If Phase {start_phase} is Phase 3: read progress.md, find the first submodule NOT marked ✅, and start writing code for that submodule immediately.
+                If Phase {start_phase} is Phase 3: FIRST check if phase3_brief.md exists. If it does NOT exist, you MUST write it before any implementation code — follow the Phase 3 brief instructions in program.md exactly (read paper artifacts, query_pdf per submodule, then write phase3_brief.md). Only AFTER phase3_brief.md exists, read progress.md, find the first submodule NOT marked ✅, and start writing code for that submodule.
                 Do NOT stop after completing one submodule. After each submodule gate passes and progress.md is updated, immediately move to the next submodule. Only stop when ALL 9 submodules are marked ✅ in progress.md.
             """).strip()
 
@@ -556,12 +635,13 @@ def build_system_prompt(start_phase: float) -> str:
         Your job is to implement the research paper described in requirements.md,
         following the step-by-step phases in program.md exactly.
 
-        You have five tools:
+        You have six tools:
         - read_file: read any text file in the repo
         - read_image: read an image file for visual inspection — use this to inspect paper figures directly
         - write_file: create or update any file
         - list_dir: list directory contents
-        - run_bash: run shell commands (git, python, uv run, grep, etc.)
+        - run_bash: run shell commands (python, grep, etc.) — do NOT run any git commands
+        - query_pdf: query the paper PDF directly with a natural language question
 
         ## Reading paper figures
         Paper figures are in paper/images/ as PNG files. You are a multimodal model — always use
@@ -573,10 +653,10 @@ def build_system_prompt(start_phase: float) -> str:
 
         ## Python environment — ONE venv for everything
         Use this python for ALL scripts (data loading, training, testing):
-        `/media/skr/storage/autoresearch/autoresearch-paper/paper/dataset/nuplan-devkit/nuplan_venv/bin/python <script>`
+        `{REPO_ROOT / _MANIFEST.get("dataset", {}).get("venv", "python")} <script>`
 
         This venv has: torch 1.9.0+cu111, nuplan-devkit, numpy, CUDA support.
-        Never use `uv run python` or `/media/skr/storage/autoresearch/.venv/bin/python`.
+        Never use `uv run python` or the repo venv.
         Never pip install anything — all packages are already installed.
 
         {phase_note}
@@ -601,24 +681,22 @@ def build_system_prompt(start_phase: float) -> str:
 
         ## Paper artifacts — read actively via tools, do NOT rely on memory
         The following files are NOT pre-loaded. You MUST read them explicitly before each submodule:
-        - paper/carplanner_equations.md — all paper equations
-        - paper/algorithms.md — all pseudocode
-        - paper/hyperparameters.md — all hyperparameter values
-        - paper/tables.md — all tables
+        {chr(10).join(f"        - {f} — paper extract" for f in _MANIFEST["extract_files"])}
         - paper/images/*.png — all figures (use read_image)
         - paper/images/*.txt — figure annotations
 
         ## Querying the paper PDF
-        To read the original paper PDF, use the query_pdf tool — NOT read_file.
+        To read the original paper PDF ({_MANIFEST["pdf"]}), use the query_pdf tool — NOT read_file.
         query_pdf sends the PDF natively to the model and returns the answer.
         The PDF is uploaded once and cached for the session (no repeated uploads).
         Use query_pdf when you need to verify an equation, figure, or section from the source.
         Example: query_pdf(question="What is the exact formula for the consistency loss?")
         Do NOT call read_file on .pdf files — it returns unreadable binary content.
+        NOTE: query_pdf requires OpenAI API access (Responses API) — it does not use the chat provider.
 
         ---
         Begin now. Follow every phase and exit gate exactly as written in the program.
-        Do not skip phases. Commit after each phase as instructed.
+        Do not skip phases. Do NOT run any git commands — all work is local only.
         When you are completely done (all phases passed), output the final summary and stop.
     """).strip()
 
@@ -630,14 +708,19 @@ def build_system_prompt(start_phase: float) -> str:
 def chat(cfg: IntelligenceConfig, messages: list[dict], tools: list[dict]) -> dict:
     import urllib.request
 
+    # Reasoning models (o3, o4-mini, etc.) don't support temperature.
+    _REASONING_MODELS = {"o3", "o3-mini", "o4-mini"}
+    is_reasoning = any(cfg.model.startswith(prefix) for prefix in _REASONING_MODELS)
+
     body = {
         "model": cfg.model,
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
         "max_completion_tokens": 16384,
-        "temperature": 0.3,
     }
+    if not is_reasoning:
+        body["temperature"] = 0.3
     payload = json.dumps(body).encode()
     base_url = (cfg.base_url or "https://api.z.ai/api/coding/paas/v4").rstrip("/")
     url = f"{base_url}/chat/completions"
@@ -670,17 +753,7 @@ def _get_paper_image_paths() -> set[str]:
     return {str(p.resolve()) for p in img_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS}
 
 
-def _write_paper_context_sentinel(reads: set[str]) -> None:
-    """Write paper_context.md so the agent knows all figures have been loaded."""
-    names = sorted(Path(p).name for p in reads)
-    content = (
-        "# Paper Context\n\n"
-        "All paper figures have been read this session.\n"
-        "Do NOT call read_image again — the images are already loaded in your context.\n\n"
-        "Figures read:\n" + "\n".join(f"- {n}" for n in names) + "\n"
-    )
-    (REPO_ROOT / "paper_context.md").write_text(content, encoding="utf-8")
-    print(f"[runner] Auto-wrote paper_context.md after reading all {len(reads)} paper figures.")
+    # paper_context.md sentinel removed — session_image_reads dedup handles re-read prevention.
 
 
 def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = False) -> None:
@@ -705,29 +778,24 @@ def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = Fals
         return
 
     # Remove session sentinel so agent re-reads paper artifacts on each fresh run
-    (REPO_ROOT / "paper_context.md").unlink(missing_ok=True)
+    # paper_context.md sentinel no longer used — dedup handled by session_image_reads.
 
     # Session-level dedup cache for read_image.
-    # Key: normalised absolute path → base result string (already returned once).
+    # Key: normalised absolute path → whether read this session.
     # On re-reads we return a short stub to avoid flooding history with base64 blobs.
-    session_image_reads: dict[str, str] = {}
+    # Persisted to disk to survive crashes/restarts.
     all_paper_images = _get_paper_image_paths()
 
     # Session-level dedup cache for paper annotation .txt files.
     # These are small but re-read every cycle after a gate block, bloating history.
     # Key: normalised absolute path → True (already returned full content once).
     session_txt_reads: set[str] = set()
-    _PAPER_IMAGES_DIR = str((REPO_ROOT / "paper" / "images").resolve())
+    _PAPER_IMAGES_DIR = str((REPO_ROOT / _MANIFEST.get("image_dir", "paper/images")).resolve())
 
     # Session-level dedup cache for paper extract .md files.
     # equations.md, algorithms.md, hyperparameters.md, tables.md are large and
     # re-read dozens of times per session, bloating history. Read once, stub thereafter.
-    _PAPER_EXTRACT_FILES = {
-        str((REPO_ROOT / "paper" / "carplanner_equations.md").resolve()),
-        str((REPO_ROOT / "paper" / "algorithms.md").resolve()),
-        str((REPO_ROOT / "paper" / "hyperparameters.md").resolve()),
-        str((REPO_ROOT / "paper" / "tables.md").resolve()),
-    }
+    _PAPER_EXTRACT_FILES = {str(p.resolve()) for p in _PAPER_EXTRACT_FILENAMES}
     session_paper_md_reads: set[str] = set()
 
     # Session-level PDF file_id cache.
@@ -735,10 +803,26 @@ def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = Fals
     # Subsequent calls reuse the cached file_id — no repeated 3.7MB uploads.
     session_pdf_file_id: dict[str, str] = {}  # path → file_id
 
+    # Session-level PDF query result cache file.
+    # query_pdf results are large and get dropped by context compression, causing the
+    # agent to re-query endlessly. We append each result to a file so the agent can
+    # read it from disk instead.
+    _PDF_QUERY_CACHE = REPO_ROOT / "pdf_query_cache.md"
+    _PDF_QUERY_CACHE.unlink(missing_ok=True)
+    session_pdf_query_count = 0
+
+    # Load persisted image reads from disk (survives crashes/restarts)
+    session_image_reads = _load_session_images()
+
     # Snapshot of progress.md used by the hard gate to detect newly added ✅ marks
     prev_progress = tool_read_file("progress.md")
 
     messages: list[dict] = [{"role": "user", "content": "Begin the implementation. Follow program.md phase by phase."}]
+
+    # Stagnation detector: counts consecutive turns with no write_file call.
+    # When the agent is stuck reading without writing, inject a hard directive.
+    _turns_without_write = 0
+    _STAGNATION_THRESHOLD = 5
 
     for turn in range(max_turns):
         print(f"\n--- Turn {turn + 1}/{max_turns} ---")
@@ -827,7 +911,7 @@ def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = Fals
             break
 
         # Execute tool calls
-        context_ready_injected = False
+        # (paper_context.md sentinel removed — no context_ready injection needed)
         for tc in msg["tool_calls"]:
             fn = tc["function"]["name"]
             try:
@@ -839,7 +923,7 @@ def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = Fals
             # Upload PDF once, cache file_id, query via Responses API.
             if fn == "query_pdf":
                 question = args.get("question", "")
-                pdf_path = REPO_ROOT / "paper" / "CarPlanner.pdf"
+                pdf_path = _PDF_PATH
                 norm_pdf = str(pdf_path.resolve())
                 if norm_pdf not in session_pdf_file_id:
                     print(f"  TOOL query_pdf — uploading PDF to Files API (first call this session)...")
@@ -866,6 +950,17 @@ def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = Fals
                     result = f"ERROR querying PDF: {e}"
                 preview = result[:200].replace("\n", " ")
                 print(f"       → {preview}")
+                # Save result to disk so it survives context compression
+                session_pdf_query_count += 1
+                with open(_PDF_QUERY_CACHE, "a", encoding="utf-8") as f:
+                    f.write(f"\n## Query {session_pdf_query_count}: {question[:120]}\n\n")
+                    # Extract text content from the API response
+                    try:
+                        resp = json.loads(result) if isinstance(result, str) else result
+                        text = resp.get("output", [{}])[-1].get("content", [{}])[-1].get("text", result)
+                    except Exception:
+                        text = result
+                    f.write(f"{text}\n\n---\n")
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
@@ -949,21 +1044,16 @@ def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = Fals
                 if norm in session_image_reads:
                     result = (
                         "[Runner: image already loaded this session — returning cached stub to preserve context. "
-                        "Do NOT call read_image for this file again. "
-                        "paper_context.md lists all figures read so far.]"
+                        "Do NOT call read_image for this file again.]"
                     )
                     print(f"  TOOL {fn}({args.get('path', '')!r}) → [cached — skipping re-read]")
                 else:
                     print(f"  TOOL {fn}({', '.join(f'{k}={str(v)[:60]!r}' for k, v in args.items())})")
                     result = execute_tool(fn, args)
-                    session_image_reads[norm] = "read"
+                    session_image_reads.add(norm)
+                    _save_session_images(session_image_reads)
                     print(f"       → [image: {args.get('path', '?')}]")
-                    # After reading all paper images for the first time, auto-write sentinel
-                    if (not (REPO_ROOT / "paper_context.md").exists()
-                            and all_paper_images
-                            and all_paper_images.issubset(session_image_reads.keys())):
-                        _write_paper_context_sentinel(set(session_image_reads.keys()))
-                        context_ready_injected = True
+                    # (paper_context.md sentinel removed — session dedup handles re-reads)
             else:
                 print(f"  TOOL {fn}({', '.join(f'{k}={str(v)[:60]!r}' for k, v in args.items())})")
                 result = execute_tool(fn, args)
@@ -1017,7 +1107,7 @@ def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = Fals
                         f"[Runner] HARD GATE BLOCKED: You marked {failed} as ✅ in progress.md "
                         f"but {reason}. progress.md has been reverted.\n\n"
                         f"⚠️ DO NOT modify any .py files. DO NOT re-read paper figures or annotations — "
-                        f"you have already read them. DO NOT read progress.md, paper_context.md, or "
+                        f"you have already read them. DO NOT read progress.md or "
                         f"annotation .txt files again.\n\n"
                         f"ACTION REQUIRED — do this NOW in one step:\n"
                         f"Open proof.md, find the section for each blocked submodule, "
@@ -1037,18 +1127,98 @@ def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = Fals
             else:
                 prev_progress = new_progress  # gate passed — advance snapshot
 
-        # After all paper images have been read for the first time, inject a prompt
-        # so the agent knows to stop reading and start writing code.
-        if context_ready_injected:
+        # --- Hard gate: phase3_brief.md must exist before any implementation/*.py is written ---
+        impl_py_written = [
+            json.loads(tc["function"].get("arguments", "{}")).get("path", "")
+            for tc in msg.get("tool_calls", [])
+            if tc["function"]["name"] == "write_file"
+            and json.loads(tc["function"].get("arguments", "{}")).get("path", "").startswith("implementation/")
+            and json.loads(tc["function"].get("arguments", "{}")).get("path", "").endswith(".py")
+        ]
+        if impl_py_written and start_phase >= 3:
+            brief_exists = (REPO_ROOT / "phase3_brief.md").exists()
+            if not brief_exists:
+                for path in impl_py_written:
+                    tool_write_file(path, "")
+                    print(f"[runner] HARD GATE reverted {path} — phase3_brief.md does not exist.")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"[Runner] HARD GATE BLOCKED: You wrote implementation code ({', '.join(impl_py_written)}) "
+                        f"before writing phase3_brief.md. Those files have been cleared.\n\n"
+                        f"You MUST write phase3_brief.md first. Follow the Phase 3 brief instructions in "
+                        f"program.md exactly: query_pdf for each submodule, fill in all paper groundings, "
+                        f"then write phase3_brief.md. Only after phase3_brief.md exists may you write any "
+                        f"implementation/*.py files."
+                    ),
+                })
+
+        # --- Hard gate: phase2_report.md must have no ❌ shape mismatches ---
+        phase2_report_written = any(
+            tc["function"]["name"] == "write_file"
+            and "phase2_report" in json.loads(tc["function"].get("arguments", "{}")).get("path", "")
+            for tc in msg.get("tool_calls", [])
+        )
+        if phase2_report_written:
+            report_text = tool_read_file("phase2_report.md")
+            if "❌" in report_text:
+                tool_write_file("phase2_report.md", "")
+                print("[runner] HARD GATE blocked phase2_report.md — contains ❌ shape mismatches. Reverting.")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[Runner] HARD GATE BLOCKED: phase2_report.md contains ❌ shape mismatches. "
+                        "phase2_report.md has been cleared.\n\n"
+                        "You must fix the data loader so that every tensor shape matches the spec in "
+                        "phase1_report.md. Re-run the loader, confirm all shapes match, then re-write "
+                        "phase2_report.md with every row showing ✅."
+                    ),
+                })
+
+        # --- Directive: after PDF queries, nudge agent to write phase3_brief.md ---
+        pdf_queries_this_turn = sum(
+            1 for tc in msg.get("tool_calls", [])
+            if tc["function"]["name"] == "query_pdf"
+        )
+        if pdf_queries_this_turn >= 1 and not (REPO_ROOT / "phase3_brief.md").exists():
+            print(f"[runner] {pdf_queries_this_turn} PDF queries completed this turn — injecting brief-write directive.")
             messages.append({
                 "role": "user",
                 "content": (
-                    "[Runner] All paper figures have been loaded into context. "
-                    "paper_context.md has been written — you do NOT need to call read_image again. "
-                    "Stop reading paper artifacts. Write paper_context.md to confirm, then immediately "
-                    "start writing implementation code for the next incomplete submodule."
+                    f"[Runner] You have completed {pdf_queries_this_turn} PDF queries this turn. "
+                    f"All results have been saved to pdf_query_cache.md.\n\n"
+                    f"DO NOT query the PDF again. DO NOT re-read paper artifacts.\n\n"
+                    f"ACTION REQUIRED NOW: Read pdf_query_cache.md, then write phase3_brief.md "
+                    f"following the exact format in program.md. Use the query results you just gathered."
                 ),
             })
+
+        # --- Stagnation detector: inject directive when agent reads without writing ---
+        writes_this_turn = sum(
+            1 for tc in msg.get("tool_calls", [])
+            if tc["function"]["name"] == "write_file"
+        )
+        if writes_this_turn > 0:
+            _turns_without_write = 0
+        else:
+            _turns_without_write += 1
+        if _turns_without_write >= _STAGNATION_THRESHOLD:
+            print(f"[runner] Stagnation detected: {_turns_without_write} turns with no write_file. Injecting directive.")
+            _turns_without_write = 0  # reset so we don't spam every turn
+            # Determine what the agent should be doing based on current state
+            if start_phase >= 3 and not (REPO_ROOT / "phase3_brief.md").exists():
+                nudge = (
+                    "You have spent multiple turns reading without writing anything. "
+                    "You MUST write phase3_brief.md NOW. Read pdf_query_cache.md if you need query results, "
+                    "then write phase3_brief.md following program.md instructions. Stop reading and start writing."
+                )
+            else:
+                nudge = (
+                    "You have spent multiple turns reading without writing anything. "
+                    "Stop reading and take action: write the next deliverable file. "
+                    "Check progress.md for what needs to be done next, then write code or documentation."
+                )
+            messages.append({"role": "user", "content": f"[Runner] STAGNATION WARNING: {nudge}"})
 
     else:
         print(f"\n=== Reached max turns ({max_turns}) ===")
