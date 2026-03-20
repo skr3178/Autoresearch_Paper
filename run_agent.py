@@ -517,7 +517,8 @@ def build_system_prompt(start_phase: float) -> str:
     program = tool_read_file("program.md")
     requirements = tool_read_file("requirements.md")
     failure_patterns = tool_read_file("failure_patterns.md")
-    paper_contract = tool_read_file("paper_contract.md")
+    phase0_report = tool_read_file("phase0_report.md")
+    phase1_brief = tool_read_file("phase1_brief.md")
     submodules = tool_read_file("submodules.md")
     # equations, algorithms, tables, hyperparameters are NOT pre-loaded —
     # the agent must actively read them via read_file/read_image as instructed in program.md Step 1.
@@ -538,7 +539,7 @@ def build_system_prompt(start_phase: float) -> str:
                   - paper/tables.md
                   - all .png files in paper/images/ and their companion .txt annotation files
                 Then follow Phase 4.5 in program.md exactly: produce inconsistency_report.md, prioritize fixes, and run the cross-phase fix loop.
-                You ARE permitted to edit Phase 2 and Phase 3 files (implementation/*.py) if the audit identifies upstream bugs — but only after writing a diagnosis in inconsistency_report.md first.
+                You ARE permitted to edit files in implementation/ if the audit identifies upstream bugs — but only after writing a diagnosis in inconsistency_report.md first.
             """).strip()
         else:
             phase_note = textwrap.dedent(f"""
@@ -589,8 +590,11 @@ def build_system_prompt(start_phase: float) -> str:
         === FAILURE PATTERNS (read carefully to avoid known mistakes) ===
         {failure_patterns}
 
-        === CURRENT PAPER CONTRACT ===
-        {paper_contract}
+        === PHASE 0 REPORT (extracted artifacts inventory) ===
+        {phase0_report}
+
+        === PHASE 1 BRIEF (paper understanding checkpoint) ===
+        {phase1_brief}
 
         === SUBMODULES (Phase 3 build order — read before writing any model code) ===
         {submodules}

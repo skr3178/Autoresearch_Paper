@@ -36,12 +36,7 @@ The implementation proceeds through seven phases. Each phase has an exit gate �
    - The equation itself (in LaTeX or Unicode math)
    - The surrounding context: what it computes, which variables are inputs/outputs, any constraints or conditions stated in the text
 
-4. **Extract referenced metrics** into `paper/metrics.md`. For each metric reported in the paper:
-   - Table number and row/column
-   - Metric name, value, and which model/ablation it corresponds to
-   - Any conditions (dataset split, best-of-K, thresholds)
-
-5. **Extract all algorithms/pseudocode** into `paper/algorithms.md`. For each algorithm block:
+4. **Extract all algorithms/pseudocode** into `paper/algorithms.md`. For each algorithm block:
    - Algorithm number and name
    - Full pseudocode verbatim
    - Inputs, outputs, and any hyperparameters referenced
@@ -59,7 +54,7 @@ The implementation proceeds through seven phases. Each phase has an exit gate �
    - What the table demonstrates (ablation, comparison, analysis)
    - Which rows/configurations are the paper's recommended defaults
 
-**Exit gate**: Every figure (annotated), equation, metric, algorithm, hyperparameter, and table from the paper is extracted. These artifacts are the reference source for all subsequent phases.
+**Exit gate**: Every figure (annotated), equation, metric, algorithm, hyperparameter, and table from the paper is extracted. Write `phase0_report.md` listing each extracted artifact (filename and item count). Do not proceed until `phase0_report.md` exists.
 
 ---
 
@@ -69,7 +64,7 @@ The implementation proceeds through seven phases. Each phase has an exit gate �
 
 #### Phase Brief — write `phase1_brief.md` before doing anything else
 
-Before writing `paper_contract.md`, read all Phase 0 artifacts and write `phase1_brief.md` containing:
+Read all Phase 0 artifacts (`paper/carplanner_equations.md`, `paper/algorithms.md`, `paper/hyperparameters.md`, `paper/tables.md`, all figures in `paper/images/`) and write `phase1_brief.md` containing:
 
 1. **Architecture summary**: In your own words, what is the paper's core mechanism? What problem does it solve and how? (3-5 sentences, no jargon — if you can't explain it simply, you don't understand it yet.)
 2. **Key equations**: List every equation that will need to be implemented. For each: equation number, what it computes, which module uses it.
@@ -79,14 +74,14 @@ Before writing `paper_contract.md`, read all Phase 0 artifacts and write `phase1
 6. **Evaluation protocol**: Exactly how is the reported metric computed? Best-of-K? Single sample? What benchmark split?
 7. **Open questions**: What is ambiguous or underspecified in the paper? List each uncertainty and your planned default.
 
-This brief is a **checkpoint**: it must reference specific equation numbers, figure numbers, and algorithm names from the paper — not generic prose. If you cannot fill a section with paper-specific content, re-read the relevant artifact.
+**Forbidden entries**: "equation TBD", "figure to be checked", "algorithm unclear" — use `query_pdf` and fill in the actual content.
 
-**Brief gate**: `phase1_brief.md` must exist and contain at least one equation number, one figure number, and one algorithm reference before proceeding to write `paper_contract.md`.
+**Brief gate**: `phase1_brief.md` must exist and contain at least one equation number, one figure number, and one algorithm reference before proceeding.
 
 ---
 
-1. **Read everything**: `requirements.md`, `failure_patterns.md`, paper in `paper/`, and the extracted artifacts from Phase 0 (`paper/images/`, `paper/carplanner_equations.md`, `paper/metrics.md`).
-2. **Write `paper_contract.md`** containing:
+1. **Read everything**: `requirements.md`, `failure_patterns.md`, paper in `paper/`, and all Phase 0 artifacts.
+2. **Write `phase1_report.md`** containing:
    - **Dataset contract**: name, source, format of one sample (type, shape, dtype, value range), train/val/test split sizes, coordinate frame and units (if spatial data), any required preprocessing
    - **Architecture contract**: every module the paper defines, with input/output shapes in paper notation
    - **Training contract**: optimizer, LR schedule, batch size, number of steps/epochs, loss function with every term and coefficient mapped: `paper symbol → semantic meaning → value`
@@ -100,7 +95,7 @@ This brief is a **checkpoint**: it must reference specific equation numbers, fig
 4. **Write `progress.md`**: ordered component checklist with exit criteria per component.
 5. **Initialize `results.tsv`** with the header row.
 
-**Exit gate**: `paper_contract.md` and `progress.md` are written. Every loss term has a mapping. Every ambiguity is classified.
+**Exit gate**: `phase1_report.md` and `progress.md` are written. Every loss term has a paper-sourced coefficient. Every ambiguity is classified. Do not proceed until both files exist.
 
 ---
 
@@ -134,7 +129,7 @@ Define configs for different scales:
 
 #### Phase Brief — write `phase2_brief.md` before writing any code
 
-Read the dataset section of the paper, `paper_contract.md`, and `paper/images/` figures that show data examples or preprocessing pipelines. Then write `phase2_brief.md` containing:
+Read the dataset section of the paper, `phase1_report.md`, and `paper/images/` figures that show data examples or preprocessing pipelines. Then write `phase2_brief.md` containing:
 
 1. **Dataset identity**: Name, source, version, license. How many scenarios/samples in train/val/test splits (exact numbers from paper).
 2. **Sample anatomy**: For each model input, state its name, shape, dtype, value range, coordinate frame, and units — derived from the paper, not assumed.
@@ -142,23 +137,25 @@ Read the dataset section of the paper, `paper_contract.md`, and `paper/images/` 
 4. **Figures referenced**: Which figures show data examples, BEV maps, or preprocessing diagrams? Describe what each shows.
 5. **Known gotchas**: Any coordinate convention, normalisation, or frame-of-reference issue that could silently produce wrong data.
 
+**Forbidden entries in `phase2_brief.md`**: "format TBD", "shape unclear", "to be verified from data" are gate failures — query the PDF and fill in the actual content before writing the brief.
+
 **Brief gate**: `phase2_brief.md` must exist and reference specific paper section numbers and at least one figure before proceeding to write any loader code.
 
 ---
 
 1. **Load one sample** from disk. Print its type, shape, dtype, value range.
 2. **Visualize it** — render/plot the sample and verify it looks correct (images look like images, coordinates are in the right frame, sequences have expected length).
-3. **Verify shapes** match what `paper_contract.md` specifies.
+3. **Verify shapes** match what `phase1_report.md` specifies.
 4. **Verify units and coordinates** — if spatial data, confirm the coordinate convention matches the paper. Test with a known point if possible.
 5. **Verify split counts** — number of train/val/test samples matches the paper or `requirements.md`.
 6. **Profile the loader**: load 10 batches at batch_size=2, time it. If >2 seconds, vectorize before proceeding.
-7. **Write `data_report.md`** documenting all findings: sample structure, shapes, dtype, value ranges, split sizes, loader throughput, any discrepancies from the paper.
+7. **Write `phase2_report.md`** documenting all findings: sample structure, shapes, dtype, value ranges, split sizes, loader throughput, any discrepancies from the paper.
 
 **Exit gate** — ALL of the following must pass before moving to Phase 3:
 1. `implementation/data_proof.py` runs to completion with exit_code=0 (no exceptions, full output printed)
 2. `implementation/data_loader.py` loads at least one batch without error — run: `python implementation/data_loader.py` and verify exit_code=0
 3. `data_report.md` exists and contains actual printed values: scenario count, ego state shapes/dtypes, tracked object count, loader throughput in seconds
-4. The shapes and dtypes in `data_report.md` match what `paper_contract.md` specifies
+4. The shapes and dtypes in `data_report.md` match what `phase1_report.md` specifies
 
 Do not declare Phase 2 complete until you have run both scripts and confirmed exit_code=0 for each.
 
@@ -173,32 +170,41 @@ After each submodule gate passes:
 
 #### Phase Brief — write `phase3_brief.md` once before starting any submodule
 
-Before writing any implementation code, write `phase3_brief.md` containing a section for **each submodule** in `submodules.md`:
+**Before writing the brief**, do ALL of the following in order:
+1. Read `paper/carplanner_equations.md`, `paper/algorithms.md`, `paper/hyperparameters.md`, `paper/tables.md`.
+2. Read every figure in `paper/images/` and its companion `.txt`.
+3. For each submodule in `submodules.md`, call `query_pdf` with a targeted question: *"What equations, figures, algorithms, and hyperparameters in the paper correspond to [submodule name]? Quote the relevant text."* Record the answer before writing the brief section.
+
+Only after completing these three steps, write `phase3_brief.md` with a section for **each submodule**:
 
 ```
 ## Submodule N: <name>
 
-**Paper grounding**
-- Equations: <list equation numbers that this submodule implements>
-- Figures: <list figure numbers and which components in those figures map to this submodule>
-- Algorithm: <algorithm name/number and which steps belong to this submodule, if any>
+**Paper grounding** (must be filled from actual paper content — no placeholders)
+- Equations: <exact equation numbers, e.g. "Eq 3, Eq 5"> — if none exist in the paper write "PDF query confirms: absent"
+- Figures: <exact figure numbers and component names visible in the figure, e.g. "Fig 2: Mode Selector block"> — if none write "PDF query confirms: absent"
+- Algorithm: <exact algorithm number and step range, e.g. "Algorithm 1, Steps 4-7"> — if none write "PDF query confirms: absent"
 
-**Input → Output** (from paper, not from submodules.md)
-- Input: <name, shape, dtype, value range as stated in paper>
-- Output: <name, shape, dtype, value range as stated in paper>
+**Input → Output** (from paper, not from submodules.md — quote the paper section)
+- Input: <name, shape, dtype, value range — cite paper section>
+- Output: <name, shape, dtype, value range — cite paper section>
 
 **Key design decisions**
-- <Any ambiguity in the paper and the chosen default>
-- <Any deviation from the paper and why>
+- For each ambiguity: state exactly what the paper says, what is unclear, and the chosen default
+- For any detail NOT in the paper: write "NOT IN PAPER — will not implement" (do not invent)
 
 **Verification plan**
-- Equation oracle: which equation will be hand-verified, and how?
+- Equation oracle: which exact equation (by number) will be hand-verified, and how?
 - Overfit target: what does "memorize 2 samples" mean for this submodule?
 ```
 
-This brief is your implementation contract. If a section cannot be filled with paper-specific content (equation numbers, figure numbers), re-read the relevant artifact before proceeding.
+**Forbidden entries** — the brief gate will REJECT any of the following:
+- `Equations: N/A` — use "PDF query confirms: absent" instead (proves you checked)
+- `Equations: <formula> (if specified)` — check the paper; do not write conditional placeholders
+- `Figures: Fig(s) showing... (to be mapped after...)` — map figures now, before writing the brief
+- Any design decision that invents a mechanism not in the paper (e.g. "implement CNN + FiLM", "implement squared jerk penalty") — write "NOT IN PAPER — will not implement" instead
 
-**Brief gate**: `phase3_brief.md` must exist and contain at least one equation number or figure number per submodule before writing any submodule code.
+**Brief gate**: `phase3_brief.md` must exist and for EVERY submodule either (a) cite a real equation number and figure number from the paper, or (b) contain "PDF query confirms: absent" for any section that is genuinely absent from the paper. Placeholders, conditionals, and invented mechanisms are gate failures.
 
 ### For each submodule:
 
@@ -212,7 +218,7 @@ If `paper_context.md` does NOT exist, read ALL of the following exactly once:
 2. **Algorithms**: `read_file("paper/algorithms.md")`
 3. **Hyperparameters**: `read_file("paper/hyperparameters.md")`
 4. **Tables**: `read_file("paper/tables.md")`
-5. **Paper contract**: `read_file("paper_contract.md")`
+5. **Paper contract**: `read_file("phase1_report.md")`
 6. **Failure patterns**: `read_file("failure_patterns.md")`
 7. **ALL paper figures**: for every `.png` in `paper/images/`, call `read_image`. Also read each companion `.txt`.
 
@@ -334,7 +340,7 @@ If ANY fail:
 
 **Goal**: Prove the full pipeline works end-to-end before investing GPU hours.
 
-#### Phase Brief — write `phase4_brief.md` before writing `train.py`
+#### Phase Brief — write `phase4_brief.md` before writing `implementation/train.py`
 
 Read Figure 2 (or whichever figure shows the full system architecture), `phase3_brief.md`, and all submodule contracts. Write `phase4_brief.md` containing:
 
@@ -347,7 +353,13 @@ Read Figure 2 (or whichever figure shows the full system architecture), `phase3_
 4. **Figures referenced**: Which figure(s) show the full training loop? Describe any data flow arrows that are not yet implemented by a submodule.
 5. **Integration risks**: Which component interfaces are most likely to have shape/dtype mismatches? Why?
 
-**Brief gate**: `phase4_brief.md` must exist and contain the full data flow (every component → output shape) and the loss assembly equation before writing `train.py`.
+**Forbidden entries in `phase4_brief.md`**:
+- Equation numbers written as placeholders (e.g. "Eq (8)-(10) placeholders", "equation TBD") — query the PDF and cite the real equation number
+- Components in the data flow that are not grounded in the paper (e.g. ConsistencyModule if absent from paper) — only include components confirmed by `query_pdf`
+- Loss terms with coefficient "TBD" or "to be confirmed" — find the value in `paper/hyperparameters.md` or via `query_pdf` before writing the brief
+- Training stage descriptions like "frozen for now" or "not yet integrated" — describe exactly what the paper says about training stages
+
+**Brief gate**: `phase4_brief.md` must exist and contain the full data flow (every component → output shape, each citing a paper figure or section), the complete loss assembly with real equation numbers and coefficient values, and the training stage description — all confirmed from the paper. No placeholders.
 
 ---
 
@@ -402,7 +414,7 @@ Compare these against the implementation:
    - Is the coefficient correct? Is the term actually contributing to `total_loss`?
    - Entry: `loss_term → paper expectation → actual value → MATCH / MISMATCH`
 
-3. **Figure-to-code re-check**: Review `proof.md` mappings. Are there any components in the architecture figures that are present in code but disabled, bypassed, or zeroed out in `train.py`?
+3. **Figure-to-code re-check**: Review `proof.md` mappings. Are there any components in the architecture figures that are present in code but disabled, bypassed, or zeroed out in `implementation/train.py`?
 
 4. **Data scale check**: Print min/max/mean of each input tensor in one batch. Are values at the expected scale for each component? (e.g., if BEV values are 0-255 but the model expects 0-1, that's a scale mismatch)
 
@@ -471,7 +483,7 @@ For each issue, starting from the highest priority:
 - If the unit test fails, fix it before returning to integration
 
 #### 3c. Re-run integration
-- Run `train.py --config debug` and compare new loss values to previous
+- Run `implementation/train.py --config debug` and compare new loss values to previous
 - Update `phase4_report.md` with the new run results
 - Update `inconsistency_report.md`: mark the issue as FIXED or STILL BROKEN
 
@@ -511,7 +523,7 @@ In either case, proceed to Phase 5.
 
 #### Phase Brief — write `phase5_brief.md` before running any training
 
-Read the paper's results section, `paper/metrics.md`, `paper/tables.md`, and `paper_contract.md`. Write `phase5_brief.md` containing:
+Read the paper's results section, `paper/tables.md`, and `phase1_report.md`. Write `phase5_brief.md` containing:
 
 1. **Target metric**: Exact name, formula, and paper value to reproduce. Which table and row?
 2. **Evaluation protocol**: Step-by-step procedure to compute the metric from model outputs — best-of-K sampling count, any filtering, normalisation, GT source, benchmark split name.
@@ -520,7 +532,9 @@ Read the paper's results section, `paper/metrics.md`, `paper/tables.md`, and `pa
 5. **Figures referenced**: Which figures show training curves, metric vs. epoch, or qualitative results? What trends should you expect to see?
 6. **Hardware adaptation**: If paper used different hardware, note any changes to batch size, learning rate scaling, or step count, and the paper section that justifies each.
 
-**Brief gate**: `phase5_brief.md` must exist and contain the target metric value, the exact evaluation protocol steps, and the ablation table before starting any training run.
+**Forbidden entries in `phase5_brief.md`**: "metric TBD", "evaluation steps to be confirmed", "ablation table not available" — query the PDF and extract the actual values before writing the brief.
+
+**Brief gate**: `phase5_brief.md` must exist and contain the target metric value (exact number from paper), the exact evaluation protocol steps (quoted from paper), and the ablation table before starting any training run.
 
 ---
 
@@ -537,7 +551,7 @@ uv run implementation/train.py --config full > run.log 2>&1
 Parse metric (grep pattern from `requirements.md`), log to `results.tsv`.
 
 ### Reproducibility gate
-Run full config twice. Results must be within tolerance (define tolerance in `paper_contract.md`). If not, the result is exploratory — not evidence.
+Run full config twice. Results must be within tolerance (define tolerance in `phase1_report.md`). If not, the result is exploratory — not evidence.
 
 ### Ablation parity check
 If the paper has an ablation table:
@@ -559,8 +573,7 @@ grep "^metric:\|^loss:\|^ERROR\|Traceback\|NaN\|nan" run.log | head -20
 ```
 If crashed: `tail -n 80 run.log` → check `failure_patterns.md` → fix root cause.
 
-**Exit gate**: At least one full run completes with a real metric value. Reproducibility verified. If paper has ablations, at least the baseline ablation reproduces.
-
+**Exit gate**: At least one full run completes with a real metric value. Reproducibility verified. If paper has ablations, at least the baseline ablation reproduces. 
 ---
 
 ## Phase 6: Improvement
@@ -574,10 +587,12 @@ Read `phase5_brief.md`, `results.tsv`, and the paper's ablation section. Write `
 1. **Current gap**: Actual metric achieved vs. paper target. Which ablation rows have been matched and which haven't?
 2. **Gap diagnosis**: For each component of the gap, cite the paper section or figure that describes the expected behaviour, and describe how the current implementation deviates.
 3. **Improvement hypotheses**: List candidate causes in order of estimated impact. For each: what paper evidence supports this hypothesis, and what single change would test it?
-4. **High-impact ambiguities**: From `paper_contract.md`'s ambiguity register, which medium/high-impact items have not yet been tested? List the alternative interpretations to try.
-5. **Stop criteria**: Exact numeric targets that define "close enough" — derived from `paper_contract.md` tolerance definition.
+4. **High-impact ambiguities**: From `phase1_report.md`'s ambiguity register, which medium/high-impact items have not yet been tested? List the alternative interpretations to try.
+5. **Stop criteria**: Exact numeric targets that define "close enough" — derived from `phase1_report.md` tolerance definition.
 
-**Brief gate**: `phase6_brief.md` must exist and reference the current metric gap with specific numbers and at least two paper-grounded improvement hypotheses before starting the experiment loop.
+**Forbidden entries in `phase6_brief.md`**: "gap TBD", "hypothesis to be determined", "improvement unclear" — base every hypothesis on a specific paper section, equation, or figure.
+
+**Brief gate**: `phase6_brief.md` must exist and reference the current metric gap with specific numbers and at least two paper-grounded improvement hypotheses (each citing a paper equation or figure) before starting the experiment loop.
 
 ---
 
@@ -587,7 +602,7 @@ Each experiment:
 2. Diagnose the gap. Use logged diagnostics, not guesswork. Check:
    - Do loss components match expected magnitudes from the paper?
    - Are intermediate representations healthy (reasonable mean/std, diverse across inputs)?
-   - Does the evaluation protocol exactly match `paper_contract.md`?
+   - Does the evaluation protocol exactly match `phase1_report.md`?
 3. Hypothesize ONE cause. Make ONE change. **Simplicity criterion**: a tiny improvement that adds complexity is not worth it. Removing code for equal or better results is always a win.
 4. `git commit` (keep all experiments — see "Experiment History" below).
 5. Run training: `uv run implementation/train.py --config full > run.log 2>&1`
@@ -601,13 +616,14 @@ Each experiment:
 
 **Stop conditions** (any of these ends the loop):
 - Ablation parity achieved — each component's contribution matches the paper's direction and approximate magnitude.
-- Metric within tolerance of paper baseline (tolerance defined in `paper_contract.md`).
+- Metric within tolerance of paper baseline (tolerance defined in `phase1_report.md`).
 - Remaining gap is isolated and documented — you know exactly which component/ambiguity is responsible but cannot resolve it without human input.
+
 
 **Stuck after 5+ failed experiments:**
 - Re-read the paper with your code open. Map each equation to its code line.
 - Re-read `failure_patterns.md`.
-- Revisit high-impact ambiguities in `paper_contract.md` — try the alternative interpretation.
+- Revisit high-impact ambiguities in `phase1_report.md` — try the alternative interpretation.
 - Strip back to last known-good state and verify it still works.
 - Check the evaluation contract — are you computing the metric exactly as the paper does?
 
@@ -685,7 +701,7 @@ This protocol applies to every phase that runs code (Phases 2–6). It replaces 
 
 ### 1. Post-Run Report
 
-After every significant run (integration test, smoke test, full training), write or append to `phaseN_report.md`:
+After every significant run (integration test, smoke test, full training), write or append to `phaseN/phaseN_report.md`:
 
 ```
 ## Run: <config> — <date or turn>
@@ -709,7 +725,7 @@ This report survives history pruning and prevents re-running identical experimen
 
 ### 2. Diagnostic Brief (before any code edit)
 
-When a run fails or a gate check does not pass, **do NOT edit any code yet**. First, append a diagnostic section to `phaseN_report.md`:
+When a run fails or a gate check does not pass, **do NOT edit any code yet**. First, append a diagnostic section to `phaseN/phaseN_report.md`:
 
 ```
 ## Diagnosis: <one-line symptom>
