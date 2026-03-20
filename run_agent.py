@@ -30,6 +30,9 @@ import subprocess
 import sys
 import textwrap
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from intelligence_config import IntelligenceConfig, load_repo_env
@@ -281,7 +284,95 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_pdf",
+            "description": (
+                "Query the paper PDF (CarPlanner.pdf) with a specific question. "
+                "The PDF is uploaded once at first call and cached for the entire session — "
+                "no repeated uploads or token waste. Use this for any question about the paper "
+                "that requires reading the original PDF (equations, figures, sections, hyperparameters). "
+                "Do NOT use read_file for .pdf files — it returns unreadable binary. "
+                "Use query_pdf instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": (
+                            "Specific question to ask about the paper. Be precise — "
+                            "e.g. 'What is the exact formula for the consistency loss? Give equation number.' "
+                            "or 'What components are shown in Figure 2 and how do they connect?'"
+                        ),
+                    },
+                },
+                "required": ["question"],
+            },
+        },
+    },
 ]
+
+
+# ---------------------------------------------------------------------------
+# PDF query helpers (Files API + Responses API)
+# ---------------------------------------------------------------------------
+
+def _upload_pdf(pdf_path: Path, api_key: str) -> str:
+    """Upload PDF to OpenAI Files API once, return file_id."""
+    boundary = "----FormBoundary" + os.urandom(8).hex()
+    pdf_bytes = pdf_path.read_bytes()
+    filename = pdf_path.name
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="purpose"\r\n\r\n'
+        f"user_data\r\n"
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: application/pdf\r\n\r\n"
+    ).encode() + pdf_bytes + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/files",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        result = json.loads(resp.read())
+    return result["id"]
+
+
+def _query_pdf(file_id: str, question: str, api_key: str, model: str) -> str:
+    """Query an uploaded PDF via the Responses API."""
+    body = json.dumps({
+        "model": model,
+        "input": [{
+            "role": "user",
+            "content": [
+                {"type": "input_file", "file_id": file_id},
+                {"type": "input_text", "text": question},
+            ],
+        }],
+        "max_output_tokens": 4096,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read())
+        return result.get("output_text", str(result))
+    except urllib.error.HTTPError as e:
+        return f"ERROR querying PDF: {e.code} {e.read().decode()[:500]}"
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +467,14 @@ def tool_run_bash(command: str, timeout: int = 600) -> str:
 def execute_tool(name: str, args: dict) -> str:
     try:
         if name == "read_file":
+            # Block PDF reads — binary content is unreadable; agent must use query_pdf instead
+            path_arg = args.get("path", "")
+            if str(path_arg).lower().endswith(".pdf"):
+                return (
+                    "[Runner: PDF files cannot be read with read_file — they return unreadable binary. "
+                    "Use the query_pdf tool instead, which sends the PDF natively to the model. "
+                    "Example: query_pdf(question='What is the consistency loss formula? Give the equation number.')]"
+                )
             return tool_read_file(args["path"])
         if name == "write_file":
             if "content" not in args:
@@ -414,7 +513,7 @@ def _make_tool_result_content(result: str) -> list | str:
 # System prompt
 # ---------------------------------------------------------------------------
 
-def build_system_prompt(start_phase: int) -> str:
+def build_system_prompt(start_phase: float) -> str:
     program = tool_read_file("program.md")
     requirements = tool_read_file("requirements.md")
     failure_patterns = tool_read_file("failure_patterns.md")
@@ -425,14 +524,31 @@ def build_system_prompt(start_phase: int) -> str:
 
     phase_note = ""
     if start_phase > 0:
-        phase_note = textwrap.dedent(f"""
-            **RESUME NOTE**: Phases 0–{start_phase - 1} are already complete. Jump directly to Phase {start_phase}.
-            Do NOT re-read or re-verify earlier phases. Do NOT explore the repo structure.
-            Do NOT run any git commands (no git checkout, git add, git commit, git branch).
-            Before doing anything in Phase {start_phase}, check which files already exist (use list_dir) and read progress.md to see what is already done. Skip any steps whose output files already exist and are non-empty. Only work on steps that are incomplete.
-            If Phase {start_phase} is Phase 3: read progress.md, find the first submodule NOT marked ✅, and start writing code for that submodule immediately.
-            Do NOT stop after completing one submodule. After each submodule gate passes and progress.md is updated, immediately move to the next submodule. Only stop when ALL 9 submodules are marked ✅ in progress.md.
-        """).strip()
+        if start_phase == 4.5:
+            phase_note = textwrap.dedent("""
+                **RESUME NOTE**: Phases 0–4 are already complete. Jump directly to Phase 4.5 (Integration Audit & Cross-Phase Fix Loop).
+                Do NOT run any git commands (no git checkout, git add, git commit, git branch).
+                Begin by reading these files to understand the current state:
+                  - progress.md, phase4_report.md, phase4_brief.md
+                Then read ALL paper artifacts for the verification pass:
+                  - paper/CarPlanner.pdf (primary reference)
+                  - paper/carplanner_equations.md
+                  - paper/algorithms.md
+                  - paper/hyperparameters.md
+                  - paper/tables.md
+                  - all .png files in paper/images/ and their companion .txt annotation files
+                Then follow Phase 4.5 in program.md exactly: produce inconsistency_report.md, prioritize fixes, and run the cross-phase fix loop.
+                You ARE permitted to edit Phase 2 and Phase 3 files (implementation/*.py) if the audit identifies upstream bugs — but only after writing a diagnosis in inconsistency_report.md first.
+            """).strip()
+        else:
+            phase_note = textwrap.dedent(f"""
+                **RESUME NOTE**: Phases 0–{int(start_phase) - 1} are already complete. Jump directly to Phase {start_phase}.
+                Do NOT re-read or re-verify earlier phases. Do NOT explore the repo structure.
+                Do NOT run any git commands (no git checkout, git add, git commit, git branch).
+                Before doing anything in Phase {start_phase}, check which files already exist (use list_dir) and read progress.md to see what is already done. Skip any steps whose output files already exist and are non-empty. Only work on steps that are incomplete.
+                If Phase {start_phase} is Phase 3: read progress.md, find the first submodule NOT marked ✅, and start writing code for that submodule immediately.
+                Do NOT stop after completing one submodule. After each submodule gate passes and progress.md is updated, immediately move to the next submodule. Only stop when ALL 9 submodules are marked ✅ in progress.md.
+            """).strip()
 
     return textwrap.dedent(f"""
         You are an autonomous research paper implementation agent.
@@ -487,6 +603,14 @@ def build_system_prompt(start_phase: int) -> str:
         - paper/tables.md — all tables
         - paper/images/*.png — all figures (use read_image)
         - paper/images/*.txt — figure annotations
+
+        ## Querying the paper PDF
+        To read the original paper PDF, use the query_pdf tool — NOT read_file.
+        query_pdf sends the PDF natively to the model and returns the answer.
+        The PDF is uploaded once and cached for the session (no repeated uploads).
+        Use query_pdf when you need to verify an equation, figure, or section from the source.
+        Example: query_pdf(question="What is the exact formula for the consistency loss?")
+        Do NOT call read_file on .pdf files — it returns unreadable binary content.
 
         ---
         Begin now. Follow every phase and exit gate exactly as written in the program.
@@ -555,7 +679,7 @@ def _write_paper_context_sentinel(reads: set[str]) -> None:
     print(f"[runner] Auto-wrote paper_context.md after reading all {len(reads)} paper figures.")
 
 
-def run_agent(start_phase: int = 0, max_turns: int = 200, dry_run: bool = False) -> None:
+def run_agent(start_phase: float = 0, max_turns: int = 200, dry_run: bool = False) -> None:
     # Clear any shell-inherited API vars so .env always takes precedence
     import os as _os
     for _var in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "AUTORESEARCH_INTELLIGENCE_MODEL"):
@@ -590,6 +714,22 @@ def run_agent(start_phase: int = 0, max_turns: int = 200, dry_run: bool = False)
     # Key: normalised absolute path → True (already returned full content once).
     session_txt_reads: set[str] = set()
     _PAPER_IMAGES_DIR = str((REPO_ROOT / "paper" / "images").resolve())
+
+    # Session-level dedup cache for paper extract .md files.
+    # equations.md, algorithms.md, hyperparameters.md, tables.md are large and
+    # re-read dozens of times per session, bloating history. Read once, stub thereafter.
+    _PAPER_EXTRACT_FILES = {
+        str((REPO_ROOT / "paper" / "carplanner_equations.md").resolve()),
+        str((REPO_ROOT / "paper" / "algorithms.md").resolve()),
+        str((REPO_ROOT / "paper" / "hyperparameters.md").resolve()),
+        str((REPO_ROOT / "paper" / "tables.md").resolve()),
+    }
+    session_paper_md_reads: set[str] = set()
+
+    # Session-level PDF file_id cache.
+    # PDF is uploaded once to OpenAI Files API on first query_pdf call.
+    # Subsequent calls reuse the cached file_id — no repeated 3.7MB uploads.
+    session_pdf_file_id: dict[str, str] = {}  # path → file_id
 
     # Snapshot of progress.md used by the hard gate to detect newly added ✅ marks
     prev_progress = tool_read_file("progress.md")
@@ -690,6 +830,75 @@ def run_agent(start_phase: int = 0, max_turns: int = 200, dry_run: bool = False)
                 args = json.loads(tc["function"]["arguments"])
             except json.JSONDecodeError:
                 args = {}
+
+            # --- query_pdf interceptor ---
+            # Upload PDF once, cache file_id, query via Responses API.
+            if fn == "query_pdf":
+                question = args.get("question", "")
+                pdf_path = REPO_ROOT / "paper" / "CarPlanner.pdf"
+                norm_pdf = str(pdf_path.resolve())
+                if norm_pdf not in session_pdf_file_id:
+                    print(f"  TOOL query_pdf — uploading PDF to Files API (first call this session)...")
+                    try:
+                        fid = _upload_pdf(pdf_path, cfg.api_key)
+                        session_pdf_file_id[norm_pdf] = fid
+                        print(f"  [runner] PDF uploaded — file_id: {fid}")
+                    except Exception as e:
+                        result = f"ERROR uploading PDF: {e}"
+                        print(f"  TOOL query_pdf → {result}")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": _make_tool_result_content(result),
+                        })
+                        continue
+                else:
+                    print(f"  TOOL query_pdf — reusing cached file_id (no re-upload)")
+                file_id = session_pdf_file_id[norm_pdf]
+                print(f"  TOOL query_pdf(question={question[:80]!r})")
+                try:
+                    result = _query_pdf(file_id, question, cfg.api_key, cfg.model)
+                except Exception as e:
+                    result = f"ERROR querying PDF: {e}"
+                preview = result[:200].replace("\n", " ")
+                print(f"       → {preview}")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": _make_tool_result_content(result),
+                })
+                continue
+
+            # --- read_file dedup for paper extract .md files ---
+            # equations.md, algorithms.md, hyperparameters.md, tables.md are re-read
+            # dozens of times per session, bloating history. Read once, stub thereafter.
+            if fn == "read_file":
+                path_arg = args.get("path", "")
+                norm_md = str(_resolve(path_arg))
+                if norm_md in _PAPER_EXTRACT_FILES and norm_md in session_paper_md_reads:
+                    result = (
+                        f"[Runner: {path_arg} already read this session — content is in your conversation history. "
+                        f"Do NOT re-read paper extract files. Use query_pdf if you need to check a specific detail.]"
+                    )
+                    print(f"  TOOL {fn}({path_arg!r}) → [paper extract cached — skipping re-read]")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": _make_tool_result_content(result),
+                    })
+                    continue
+                elif norm_md in _PAPER_EXTRACT_FILES:
+                    print(f"  TOOL {fn}({', '.join(f'{k}={str(v)[:60]!r}' for k, v in args.items())})")
+                    result = execute_tool(fn, args)
+                    session_paper_md_reads.add(norm_md)
+                    preview = result[:200].replace("\n", " ")
+                    print(f"       → {preview}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": _make_tool_result_content(result),
+                    })
+                    continue
 
             # --- read_file dedup for paper annotation .txt files ---
             # After a gate block, the agent re-reads all 6 annotation files every cycle,
@@ -847,7 +1056,7 @@ def run_agent(start_phase: int = 0, max_turns: int = 200, dry_run: bool = False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Autonomous paper implementation agent")
-    parser.add_argument("--phase", type=int, default=0, help="Start from this phase (0=beginning)")
+    parser.add_argument("--phase", type=float, default=0, help="Start from this phase (0=beginning, 4.5=integration audit)")
     parser.add_argument("--max-turns", type=int, default=200, help="Max agent turns (default: 200)")
     parser.add_argument("--dry-run", action="store_true", help="Print system prompt and exit")
     args = parser.parse_args()

@@ -1,15 +1,17 @@
 # Progress
 
-## Phase 0–3
-✅ Complete (per resume note)
+## Phase 0: Paper Extraction ✅ COMPLETE
+## Phase 1: Paper Contract ✅ COMPLETE
+## Phase 2: Data Proof ✅ COMPLETE
 
-## Phase 4: Integration Proof ✅ COMPLETE
+## Phase 3: Component Implementation ✅ COMPLETE
 
-Gate checks:
-- [x] Single-step forward+backward passes without error (debug)
-- [x] Loss decreases over 10 steps at smoke/debug config (criterion: last < mean(first 3); see phase4_report.md)
-- [x] Model can overfit 1–2 samples (final total_loss < 1.0)
-- [x] Reproducibility: two identical runs with same seed produce identical scalar losses
-- [x] No NaN / no anomalous magnitudes (>1e6) in loss terms
-
-Evidence: see `phase4_report.md`.
+- [x] Submodule 1: data_loader ✅
+- [x] Submodule 2: transition_model ✅
+- [x] Submodule 3: mode_selector ✅
+- [x] Submodule 4: autoregressive_policy ✅
+- [x] Submodule 5: consistency_module ✅
+- [x] Submodule 6: critic ✅
+- [x] Submodule 7: ppo_loop ✅
+- [x] Submodule 8: expert_refinement ✅
+- [x] Submodule 9: rule_selector ✅

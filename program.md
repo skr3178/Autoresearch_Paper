@@ -229,6 +229,13 @@ This file is your signal that paper artifacts are loaded. Never re-read paper ar
 - Create the files listed in `submodules.md` for this submodule.
 - Parameterize all dimensions from a config dict — never hardcode spatial sizes, channel counts, sequence lengths, or vocabulary sizes.
 - Implement only what is needed for this submodule's gate. Do not pre-implement the next submodule.
+- **Every non-trivial computation must cite its paper source in a comment**:
+  - If it implements a paper equation: `# Eq N: <formula> (paper/carplanner_equations.md)`
+  - If it follows a paper algorithm step: `# Algorithm N, Step M (paper/algorithms.md)`
+  - If it uses a paper hyperparameter: `# <symbol>=<value> from Table N / Section X (paper/hyperparameters.md)`
+  - If NO paper source exists for a computation after checking the extracted artifacts: call `query_pdf` with a targeted question (e.g. "Is there an equation or description for <computation>?"). If the PDF confirms it is absent, then and only then write: `# ⚠️ INVENTION: not in paper (confirmed by PDF query) — justified by <reason>`
+- **Acceptable inventions** (structural scaffolding that any PyTorch model needs): layer normalization, dropout, activation functions (ReLU, GELU, SiLU), weight initialization, gradient clipping, learning rate warm-up, padding/masking boilerplate. These do NOT require `⚠️ INVENTION` comments.
+- **Unacceptable inventions** (must NOT be added without paper grounding): loss terms, reward signals, penalty functions, auxiliary objectives, attention mechanisms, temperature or scaling factors applied to loss or logits, special handling for edge cases (NaN, collision, clip values). If the paper does not define it, do not implement it — remove it instead.
 
 #### Step 3: Verify (not just test)
 
@@ -249,9 +256,34 @@ Write `implementation/test_<submodule>.py`. The tests must prove correctness, no
 Run: `uv run implementation/test_<submodule>.py`
 
 #### Step 4: Document proof
-After tests pass, update `proof.md` for this submodule:
+After tests pass, update `proof.md` for this submodule with ALL of the following sections:
+
+**4a. Equation citations**
+For every formula in the implementation, write a mapping entry:
+```
+Eq N (<formula>) → <file.py>:<function or line> — MATCH / MISMATCH: <notes>
+```
+For every computation with NO paper equation:
+```
+⚠️ INVENTION: <what it does> — justified by <reason>, or REMOVED if unjustified
+```
+Cross-check against `paper/carplanner_equations.md`. If an equation in the paper is NOT implemented, note it as a gap.
+
+**4b. Algorithm citations**
+For each step in `paper/algorithms.md` that belongs to this submodule:
+```
+Algorithm N, Step M: <step description> → <file.py>:<function> — IMPLEMENTED / MISSING
+```
+
+**4c. Hyperparameter citations**
+For every numeric constant or coefficient in the implementation:
+```
+<variable_name> = <value> → paper source: <symbol>, Table N / Section X (paper/hyperparameters.md) — MATCH / MISMATCH / INVENTED
+```
+
+**4d. Correctness evidence**
 - What assumptions were made and why
-- What evidence confirms correctness (which tests pass, what they verify)
+- Which tests pass and what they verify
 - Any remaining uncertainty
 
 #### Step 5: Figure verification — MANDATORY before marking ✅
@@ -280,10 +312,21 @@ Before marking any submodule complete, you MUST do a visual architecture verific
 Only after completing this mapping and resolving all `⚠️` entries may you mark `✅` in `progress.md`.
 
 #### Step 6: Gate check
-- **PASS**: All code tests pass AND figure verification is complete and documented in `proof.md`. Then:
-  - Mark `✅` in `progress.md`
-  - Only now, proceed to the next submodule in `submodules.md`.
-- **FAIL**: Debug (max 3 attempts). If stuck, mark `⚠️ BLOCKED` in `progress.md` with notes and the specific failing gate check. Do not skip to the next submodule.
+ALL of the following must be true before marking ✅:
+
+1. All code tests pass (shapes, dtypes, forward/backward, equation oracle, overfit)
+2. Figure verification complete in `proof.md` — forward + reverse mappings, no unresolved ⚠️ entries
+3. **Equation citations complete in `proof.md`** — every formula maps to an equation in `paper/carplanner_equations.md`, OR is explicitly declared as `⚠️ INVENTION` with justification
+4. **Algorithm citations complete in `proof.md`** — every algorithm step from `paper/algorithms.md` that belongs to this submodule is either IMPLEMENTED or noted as a deliberate gap
+5. **Hyperparameter citations complete in `proof.md`** — every numeric constant traces to `paper/hyperparameters.md` or is declared as INVENTED
+6. **No silent inventions** — any computation not grounded in the paper must be explicitly flagged. Undeclared inventions are treated as gate failures.
+
+If ALL pass:
+- Mark `✅` in `progress.md`
+- Only now, proceed to the next submodule in `submodules.md`.
+
+If ANY fail:
+- Debug (max 3 attempts). If stuck, mark `⚠️ BLOCKED` in `progress.md` with notes. Do not skip to the next submodule.
 
 ---
 
@@ -324,6 +367,141 @@ Read Figure 2 (or whichever figure shows the full system architecture), `phase3_
 7. `progress.md` is updated with a `## Phase 4: Integration Proof ✅ COMPLETE` section listing each gate check result
 
 Do not declare Phase 4 complete until ALL checks are documented in `phase4_report.md` and `progress.md` is updated.
+
+---
+
+## Phase 4.5: Integration Audit & Cross-Phase Fix Loop
+
+**Goal**: Verify the implementation matches the paper mathematically, not just structurally. Fix upstream bugs that Phase 4 revealed but could not resolve within `train.py` alone.
+
+**When to enter Phase 4.5**: After Phase 4 exit gate passes but `phase4_report.md` lists anomalies (loss terms that are zero, extremely large, negative where they should be positive, or disabled via lambda=0).
+
+---
+
+### Step 1: Verification Pass — produce `inconsistency_report.md`
+
+Read ALL of the following paper artifacts before writing anything. These are the ground truth sources:
+
+- **PDF**: `paper/CarPlanner.pdf` — primary reference for any ambiguity
+- **Equations**: `paper/carplanner_equations.md`
+- **Algorithms**: `paper/algorithms.md`
+- **Hyperparameters**: `paper/hyperparameters.md`
+- **Tables**: `paper/tables.md`
+- **Figures**: all `.png` files in `paper/images/` plus their companion `.txt` annotation files
+
+Compare these against the implementation:
+
+1. **Equation verification**: For every equation in `paper/carplanner_equations.md`:
+   - Find the code line(s) that implement it
+   - Verify the formula matches: correct variables, correct signs, correct operations
+   - Write a mapping entry: `Eq N → file.py:line — MATCH / MISMATCH: <description>`
+
+2. **Loss term audit**: For every loss term in the paper's training objective:
+   - What does the paper say its typical magnitude should be? (Check tables, figures, or text for any mention of loss scales)
+   - What does `phase4_report.md` show?
+   - Is the coefficient correct? Is the term actually contributing to `total_loss`?
+   - Entry: `loss_term → paper expectation → actual value → MATCH / MISMATCH`
+
+3. **Figure-to-code re-check**: Review `proof.md` mappings. Are there any components in the architecture figures that are present in code but disabled, bypassed, or zeroed out in `train.py`?
+
+4. **Data scale check**: Print min/max/mean of each input tensor in one batch. Are values at the expected scale for each component? (e.g., if BEV values are 0-255 but the model expects 0-1, that's a scale mismatch)
+
+Write `inconsistency_report.md` with all findings, structured as:
+
+```
+# Inconsistency Report
+
+## Equation Mismatches
+| Eq # | Paper formula | Code location | Status | Issue |
+|------|--------------|---------------|--------|-------|
+| Eq 5 | L_value = ... | critic.py:45 | MISMATCH | value target not normalized |
+
+## Loss Term Audit
+| Loss term | Paper expectation | Actual value | Coefficient | Status |
+|-----------|------------------|--------------|-------------|--------|
+| value_loss | ~1.0 (estimated) | 0.0 | 0.5 | BROKEN — not computed |
+
+## Disabled/Bypassed Components
+| Component | Why disabled | Paper says |
+|-----------|-------------|------------|
+| consistency_loss | lambda=0.0 | lambda=0.1 (Table 3) |
+
+## Data Scale Issues
+| Tensor | Expected range | Actual range | Status |
+|--------|---------------|--------------|--------|
+| bev | [0, 1] | [0, 255] | MISMATCH |
+```
+
+**Gate**: `inconsistency_report.md` must exist and contain at least the equation and loss term audit sections before proceeding to fixes.
+
+---
+
+### Step 2: Prioritize Fixes
+
+Rank issues from `inconsistency_report.md` by impact:
+
+1. **Critical**: Loss term is zero, NaN, or disabled — the model cannot learn this objective at all
+2. **High**: Equation mismatch — the model learns the wrong thing
+3. **Medium**: Scale mismatch — the model can learn but converges poorly
+4. **Low**: Missing component that the paper includes only in full training (not integration proof)
+
+Work on Critical issues first, then High, then Medium. Skip Low for now.
+
+---
+
+### Step 3: Cross-Phase Fix Loop
+
+For each issue, starting from the highest priority:
+
+#### 3a. Diagnose
+- Use the Diagnostic Ladder (see "Run-Report-Diagnose Protocol") to identify which phase and file the bug lives in
+- Write a diagnosis in `inconsistency_report.md` under the issue entry:
+  ```
+  **Root cause**: <phase>/<file.py> — <what is wrong>
+  **Fix**: <what needs to change>
+  ```
+
+#### 3b. Fix upstream
+- You ARE permitted to edit Phase 2 and Phase 3 files during Phase 4.5
+- Edit ONLY the file identified in the diagnosis — do not refactor or "improve" adjacent code
+- After editing, re-run that file's unit tests:
+  ```
+  python implementation/test_<submodule>.py
+  ```
+- If the unit test fails, fix it before returning to integration
+
+#### 3c. Re-run integration
+- Run `train.py --config debug` and compare new loss values to previous
+- Update `phase4_report.md` with the new run results
+- Update `inconsistency_report.md`: mark the issue as FIXED or STILL BROKEN
+
+#### 3d. Loop limit
+- **Max 3 fix attempts per issue**. If the same issue is not resolved after 3 attempts, write a stuck entry:
+  ```
+  **STUCK**: <issue> — attempted <what>, result was <what>.
+  Possible root causes not yet investigated: <list>.
+  Recommend: <what a human should check>
+  ```
+- **Max 3 cross-phase fix iterations total** (not per issue). After 3 full loops through Steps 3a–3c, proceed to Phase 5 regardless, with the stuck report documenting what remains.
+
+---
+
+### Step 4: Exit
+
+**Exit gate** — ONE of the following:
+
+**A. Clean exit** (all issues resolved):
+- All loss terms have reasonable magnitudes (no zeros, no >10^6, no negative entropy)
+- All Critical and High issues in `inconsistency_report.md` are marked FIXED
+- `phase4_report.md` updated with final clean run
+- `progress.md` updated with `## Phase 4.5: Integration Audit ✅ COMPLETE`
+
+**B. Stuck exit** (loop limit reached):
+- `inconsistency_report.md` contains stuck entries for unresolved issues
+- Each stuck entry has a clear diagnosis and recommendation
+- `progress.md` updated with `## Phase 4.5: Integration Audit ⚠️ PARTIAL — see inconsistency_report.md`
+
+In either case, proceed to Phase 5.
 
 ---
 
