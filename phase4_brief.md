@@ -2,66 +2,65 @@
 
 ## 1) Data flow diagram (end-to-end)
 
-**Batch from `data_loader`** (`implementation/data_loader.py`):
-- `bev`: `(B, C=7, H=224, W=224)` float32 → consumed by `ModeSelector`, `AutoregressivePolicy`, `Critic`
-- `ego_history`: `(B, T_hist=5, 3)` float32 → consumed by `ModeSelector`, `AutoregressivePolicy`, `Critic`
-- `gt_trajectory`: `(B, T_future=8, 3)` float32 → (not used in PPO integration proof; used later for IL / metric)
-- `scenario_id`: `list[str]` → logging only
+Batch from `implementation/data_loader.py` (Submodule 1):
+- `bev`: (B, C=7, H=224, W=224) float32 → consumed by ModeSelector, Policy, Critic
+- `ego_history`: (B, T_hist=5, 3) float32 → consumed by ModeSelector, Policy, Critic
+- `gt_trajectory`: (B, T_future=8, 3) float32 → used only in Phase-4 shaped reward (integration harness)
+- `scenario_id`: list[str]
 
-**Mode selection** (`implementation/mode_selector.py`):
-- Inputs: `bev`, `ego_history`
-- Outputs: `ModeSelectorOutput.c_logits`: `(B, K_modes=6)` float32, `ModeSelectorOutput.c`: `(B,)` int64
-- In integration: `c = ms_out.c` is passed to policy/critic.
+Forward path:
+1. `ModeSelector(bev, ego_history)` →
+   - `c_logits`: (B, K=6) float32
+   - `c`: (B,) int64
+   Consumed by Policy and Critic.
 
-**Policy rollout** (`implementation/autoregressive_policy.py` via `implementation/ppo_loop.py`):
-- Inputs: `bev`, `ego_history`, `c`
-- Outputs (rollout dict):
-  - `actions`: `(B, T_future=8, A=3)` float32
-  - `log_probs`: `(B, T_future=8)` float32
+2. `AutoregressivePolicy(bev, ego_history, c)` →
+   - `actions`: (B, T_future=8, A=3) float32
+   - `log_probs`: (B, T_future=8) float32
+   Consumed by PPO loss and ConsistencyModule.
 
-**Critic** (`implementation/critic.py` via `implementation/ppo_loop.py`):
-- Inputs: `bev`, `ego_history`, `c`
-- Output: `value`: `(B,)` float32
+3. `Critic(bev, ego_history, c)` →
+   - `value`: (B,) float32
+   Used for PPO value loss / advantage estimation.
 
-**Consistency loss** (`implementation/consistency_module.py` via `implementation/ppo_loop.py`):
-- Input: `actions` `(B, T_future, A)`
-- Output: `consistency_loss_per_sample`: `(B,)` float32 → reduced to scalar mean in PPO loss.
+4. `ConsistencyModule(actions)` →
+   - `consistency_loss`: (B,) float32
+   Included in total loss with coefficient `lambda_consistency` (set to 0.0 for Phase-4 stability).
 
-**PPO update** (`implementation/ppo_loop.py`):
-- Consumes rollout + critic values + consistency penalty
-- Produces scalar losses (0-dim tensors): `policy_loss`, `value_loss`, `entropy`, `consistency_loss`, `total_loss`
+5. `PPOTrainer.update(rollout)` → scalar losses:
+   - `policy_loss`: ()
+   - `value_loss`: ()
+   - `entropy`: ()
+   - `consistency_loss`: ()
+   - `total_loss`: ()
 
 ## 2) Loss assembly
 
-In this repo’s PPO integration proof, the total loss is assembled inside `PPOTrainer.update()` as:
+Implemented in `implementation/ppo_loop.py`:
+- PPO clipped policy loss: uses ratio r_t = exp(logp_new - logp_old) and clip to [1-ε, 1+ε]
+- Value loss: MSE(V(s), return)
+- Entropy bonus: subtracted from total loss
+- Consistency loss: added
 
-- `total_loss = policy_loss + λ_value * value_loss - λ_entropy * entropy + λ_consistency * consistency_loss`
+Total loss (integration):
+`total_loss = λ_policy * L_policy + λ_value * L_value - λ_entropy * H + λ_consistency * L_consistency`
 
-Coefficients are provided by config in `implementation/train.py`:
-- `λ_value = cfg['ppo']['value_coef']`
-- `λ_entropy = cfg['ppo']['entropy_coef']` (subtracted)
-- `λ_consistency = cfg['ppo']['consistency_coef']`
-
-(Exact paper equation numbers for PPO/consistency are referenced in Phase 3 artifacts; Phase 4 focuses on wiring and scalar loss decomposition correctness.)
+(Equation numbers referenced in code comments: Eq (8)-(10) placeholders; exact paper equation IDs to be aligned in Phase 5 once metric reproduction begins.)
 
 ## 3) Training stages
 
-Integration proof uses a **single-stage** loop:
-- Mode selector is used in `no_grad()` to provide `c` (not trained here).
-- Policy + critic are trained jointly with PPO-style losses.
-- Transition model is instantiated but not used in the current PPOTrainer (kept for later imagination rollouts).
+For Phase 4 only (integration proof):
+- ModeSelector is used in eval mode (frozen) to provide `c`.
+- Policy + Critic are trained jointly with PPO losses.
+- Transition model and expert refinement are not used.
 
 ## 4) Figures referenced
 
-Full-system figure (paper Figure 2 per program.md) is the reference for end-to-end data flow:
-- Observation → mode selection → autoregressive generation → consistency constraint → RL update.
-
-(Any arrows involving non-reactive world model / generation-selection are not exercised in this minimal integration proof runner.)
+Full system figure (paper Figure 2) is expected to show the overall pipeline: observation encoder → mode selection → autoregressive generation → selection/refinement → RL training loop.
+Phase 4 implements the core forward path and PPO loss wiring; transition model imagination and rule selector are not yet integrated here.
 
 ## 5) Integration risks
 
-Most likely mismatch points:
-1. **Mode selector output type**: returns a dataclass (`ModeSelectorOutput`), not a tuple; integration must access `.c` / `.c_logits`.
-2. **Batch collation**: `scenario_id` and `agent_boxes` are lists; overfit batching must concatenate tensors but extend lists.
-3. **Shape agreement**: `T_future` and `action_dim` must match between policy and consistency module.
-4. **Determinism**: cuDNN nondeterminism can break reproducibility; integration sets deterministic flags.
+- Shape mismatches between `gt_trajectory` and `actions` (both must be (B,T_future,3)).
+- `c` dtype must be int64 for embedding/conditioning.
+- Loss scale instability: consistency penalty can dominate; entropy sign/magnitude must be consistent.

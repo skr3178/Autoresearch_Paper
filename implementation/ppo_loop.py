@@ -89,18 +89,30 @@ class PPOTrainer:
         self.lambda_entropy = float(cfg.get("lambda_entropy", 0.001))
         self.lambda_consistency = float(cfg.get("lambda_consistency", 1.0))
 
+        # Stabilization knobs for integration proof (configurable; defaults chosen to keep scales O(1)).
+        self.reward_scale = float(cfg.get("reward_scale", 1.0))
+        self.reward_clip = cfg.get("reward_clip", None)  # e.g. 10.0
+        self.value_clip = cfg.get("value_clip", None)  # e.g. 10.0
+
     def collect_rollout(self, batch: Dict[str, torch.Tensor], rewards: Optional[torch.Tensor] = None) -> Rollout:
         bev = batch["bev"]
         ego = batch["ego_history"]
         c = batch["c"]
 
         pol_out: PolicyOutput = self.policy(bev, ego, c, deterministic=False)
+
+        # Value predictions per timestep (minimal: repeat V(s0) across time).
         v0 = self.critic(bev, ego, c)  # (B,)
         B, T = pol_out.log_probs.shape
         values = v0[:, None].expand(B, T + 1).contiguous()
 
         if rewards is None:
             rewards = torch.zeros(B, T, device=bev.device, dtype=torch.float32)
+
+        # Scale/clip rewards to keep return magnitudes controlled.
+        rewards = rewards.to(dtype=torch.float32) * self.reward_scale
+        if self.reward_clip is not None:
+            rewards = torch.clamp(rewards, -float(self.reward_clip), float(self.reward_clip))
 
         return Rollout(
             bev=bev,
@@ -137,6 +149,11 @@ class PPOTrainer:
 
         v_pred = self.critic(rollout.bev, rollout.ego_history, rollout.c)  # (B,)
         target_v = ret.mean(dim=1)  # (B,)
+
+        if self.value_clip is not None:
+            v_pred = torch.clamp(v_pred, -float(self.value_clip), float(self.value_clip))
+            target_v = torch.clamp(target_v, -float(self.value_clip), float(self.value_clip))
+
         value_loss = ((v_pred - target_v) ** 2).mean()
 
         log_std = pol_new.log_std

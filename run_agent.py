@@ -507,7 +507,7 @@ def chat(cfg: IntelligenceConfig, messages: list[dict], tools: list[dict]) -> di
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
-        "max_completion_tokens": 4096,
+        "max_completion_tokens": 16384,
         "temperature": 0.3,
     }
     payload = json.dumps(body).encode()

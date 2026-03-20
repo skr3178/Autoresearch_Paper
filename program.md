@@ -314,7 +314,16 @@ Read Figure 2 (or whichever figure shows the full system architecture), `phase3_
 4. **Tiny overfit test** at smoke config: train on 1-2 samples for many steps. The model should memorize them. If it can't overfit a trivial dataset, the learning pipeline is broken.
 5. **Reproducibility check**: run the 10-step test twice with the same seed. Results must match exactly. If they don't, there's non-determinism that will make experiments unreliable.
 
-**Exit gate**: Loss decreases over 10 steps. Model can overfit 1-2 samples. Two identical runs produce identical results.
+**Exit gate** — ALL of the following must be satisfied before declaring Phase 4 complete:
+1. Single-step forward+backward passes without error (exit_code=0)
+2. Loss **decreases** over 10 steps at smoke config — print step-by-step loss values as evidence
+3. Model can overfit 1-2 samples — total loss drops below 1.0 on the fixed batch
+4. Two identical runs with the same seed produce **identical** scalar losses
+5. No loss term has an anomalous magnitude (>10^6 or NaN) — if any term does, apply the Diagnostic Ladder before proceeding
+6. `phase4_report.md` exists with run reports documenting all gate checks above
+7. `progress.md` is updated with a `## Phase 4: Integration Proof ✅ COMPLETE` section listing each gate check result
+
+Do not declare Phase 4 complete until ALL checks are documented in `phase4_report.md` and `progress.md` is updated.
 
 ---
 
@@ -490,7 +499,85 @@ Every experiment is data. Never `git reset --hard`. Use `git revert` if you need
 ### 12. Training completed ≠ correct
 A run that finishes without crashing proves nothing about correctness. Verify outputs, check ablation deltas, test evaluation protocol, compare intermediate quantities.
 
+---
 
+## Run-Report-Diagnose Protocol
+
+This protocol applies to every phase that runs code (Phases 2–6). It replaces blind edit-retry loops with structured observation and diagnosis.
+
+### 1. Post-Run Report
+
+After every significant run (integration test, smoke test, full training), write or append to `phaseN_report.md`:
+
+```
+## Run: <config> — <date or turn>
+**Command**: <exact command run>
+**Exit code**: <0 or 1>
+**Loss values** (every term, not just total):
+- policy_loss: <value>
+- value_loss: <value>
+- entropy: <value>
+- consistency_loss: <value>
+- total_loss: <value>
+**Gate checks**:
+- [ ] Loss decreases over N steps
+- [ ] Overfit test passes
+- [ ] Reproducibility matches
+- [ ] <any phase-specific gate>
+**Anomalies**: <anything unexpected — extreme values, NaN, wrong signs, unexpected magnitudes>
+```
+
+This report survives history pruning and prevents re-running identical experiments. Always write the report before attempting any fix.
+
+### 2. Diagnostic Brief (before any code edit)
+
+When a run fails or a gate check does not pass, **do NOT edit any code yet**. First, append a diagnostic section to `phaseN_report.md`:
+
+```
+## Diagnosis: <one-line symptom>
+**Symptom**: <what went wrong — exact values, exact error message>
+**Hypotheses** (ranked by likelihood):
+1. <most likely cause> — evidence: <why you think this>
+2. <next most likely> — evidence: <why>
+3. <least likely> — evidence: <why>
+**Investigation plan**:
+- [ ] Read <file.py> lines N–M to check <specific thing>
+- [ ] Run <command> to verify <hypothesis>
+**Suspected phase/layer**: <Phase N — which phase's code likely contains the bug>
+```
+
+Only after writing this diagnosis may you begin investigating and editing code.
+
+### 3. Diagnostic Ladder
+
+When investigating a failure, work **backward through the pipeline** from the symptom. Do NOT rewrite the current phase's file repeatedly — the bug may live in an earlier phase.
+
+**Investigation order** (check each layer before moving to the next):
+
+1. **Current phase wiring** — is the integration code (e.g. `train.py`) passing the right tensors, in the right order, with the right dtypes?
+2. **Loss assembly** — do coefficients match the paper? Is the formula correct? Print each term's magnitude on step 1.
+3. **Individual submodules** (Phase 3) — run each submodule's test file in isolation (`python implementation/test_<submodule>.py`). Does it still pass? Are output magnitudes reasonable?
+4. **Data pipeline** (Phase 2) — are input values at expected scale? Are targets normalised? Print min/max/mean of one batch.
+5. **Paper contract** (Phase 1) — re-read the relevant equation in the paper and verify the contract matches.
+6. **Paper extraction** (Phase 0) — was the equation or figure extracted correctly?
+
+**Rules**:
+- Do not edit code until you have identified which layer the bug is in.
+- Do not edit more than one layer per fix attempt.
+- After each fix, re-run and update the report. If the symptom changes, write a new diagnosis.
+- If 3 fix attempts at the same layer fail, move one layer deeper in the ladder.
+
+### 4. Common Symptoms → Where to Start
+
+| Symptom | Start at |
+|---|---|
+| Loss is NaN | Layer 2: loss assembly (log of zero? division by zero? missing gradient clipping?) |
+| Loss extremely large (>10^6) | Layer 3: submodule output scale → Layer 4: data value scale → Layer 2: loss coefficients |
+| Loss doesn't decrease | Layer 2: learning rate / optimizer → Layer 3: frozen params that should be trainable → Layer 2: loss sign |
+| Loss decreases but metric bad | Evaluation protocol → train/eval mismatch → metric computation |
+| Shape mismatch error | Layer 1: integration wiring → Layer 3: submodule contract |
+| Overfit test fails | Layer 3: model capacity → Layer 4: data loader returning different samples each time → label correctness |
+| Reproducibility fails | Non-deterministic ops → unseeded randomness → data loader shuffle seed |
 
 
 
